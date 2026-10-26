@@ -29,3 +29,8 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# ─── IRONCLAD Security — NEVER commit these ────────────────────────────────
+# Pre-shared AES-128 key for LoRa authenticated encryption.
+# Generate with: python scripts/gen_key.py
+firmware/secrets.h
