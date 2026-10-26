@@ -539,7 +539,7 @@ export default function LiveCameraPage() {
             <footer className="px-6 py-4 border-t border-[#1a1a1a] bg-[#050505] flex items-center justify-between text-xs font-mono text-[#666]">
                 <div className="flex items-center gap-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#C6FF3D]" />
-                    <span>SKOPEO ABSR TACTICAL SURVEILLANCE • SECTOR-04 BRAVO</span>
+                    <span>IRONCLAD ABSR TACTICAL SURVEILLANCE • SECTOR-04 BRAVO</span>
                 </div>
                 <span>TEAM CLUTCH HEROES</span>
             </footer>

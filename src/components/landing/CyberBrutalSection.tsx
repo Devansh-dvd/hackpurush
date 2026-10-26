@@ -34,7 +34,7 @@ export default function CyberBrutalSection({ onViewTwin, onScrollToDrone, onScro
             <div className="relative z-10 flex items-center justify-between px-6 md:px-10 py-5 border-b" style={{ borderColor: "#3a3a3a" }}>
                 <div className="flex items-center gap-2">
                     <span style={{ background: "#C6FF3D" }} className="w-3 h-3 inline-block" />
-                    <span className="tracking-tight font-bold text-3xl" style={{ color: "#fff" }}>SKOPEO</span>
+                    <span className="tracking-tight font-bold text-3xl" style={{ color: "#fff" }}>IRONCLAD</span>
                     <span className="hidden sm:inline text-xs px-2 py-0.5 ml-2 font-mono" style={{ background: "#161616", border: "1px solid #333", color: "#C6FF3D" }}>SENTINEL-ARM</span>
                 </div>
                 <div className="hidden md:flex items-center gap-8 text-sm" style={{ fontFamily: "'JetBrains Mono', monospace", color: "#d0d0d0" }}>

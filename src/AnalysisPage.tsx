@@ -145,7 +145,7 @@ export default function AnalysisPage() {
                         className="font-bold text-xl"
                         style={{ color: "#fff" }}
                     >
-                        SKOPEO
+                        IRONCLAD
                     </span>
 
                     <span style={{ color: "#555" }}>/</span>
