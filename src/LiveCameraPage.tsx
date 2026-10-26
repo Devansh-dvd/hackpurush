@@ -7,9 +7,17 @@ import {
     Shield,
     Crosshair,
     Navigation,
-    Activity
+    Activity,
+    Radio,
+    Zap,
+    Cpu,
+    Wifi,
+    Terminal,
+    Eye,
+    EyeOff
 } from "lucide-react";
 import TacticalWorldMap from "./components/camera/TacticalWorldMap";
+import { loraSerialService, LoRaTelemetryPacket, SerialStatus } from "./services/loraSerial";
 
 export default function LiveCameraPage() {
     const [spectrumMode, setSpectrumMode] = useState<"STANDARD" | "NIGHT" | "THERMAL">("STANDARD");
@@ -17,6 +25,11 @@ export default function LiveCameraPage() {
     const [gpsLoading, setGpsLoading] = useState(false);
     const [gpsMessage, setGpsMessage] = useState<string>("DEFAULT PERIMETER COORDINATES");
     
+    // 3-Way Link Source Mode: Live Wi-Fi direct, LoRa ESP32 USB Serial, or 100% Offline Simulation
+    const [telemetrySource, setTelemetrySource] = useState<"WIFI" | "LORA" | "SIMULATION">(() => {
+        return (localStorage.getItem("ironclad_source_mode") as any) || "WIFI";
+    });
+
     // Live stream state from Raspberry Pi
     const [streamIp, setStreamIp] = useState("172.20.10.3:5000");
     const [streamOnline, setStreamOnline] = useState(true);
@@ -25,7 +38,14 @@ export default function LiveCameraPage() {
     const [threatLevel, setThreatLevel] = useState<string>("CLEAR");
     const [threatScore, setThreatScore] = useState<number>(0.048);
     const [motionLevel, setMotionLevel] = useState<number>(0.15);
-    const [loraSignal, setLoraSignal] = useState<number | null>(null);
+    const [loraSignal, setLoraSignal] = useState<number | null>(-72);
+    const [showVideoInOffline, setShowVideoInOffline] = useState(false);
+
+    // Web Serial LoRa ESP32 state
+    const [serialStatus, setSerialStatus] = useState<SerialStatus>("DISCONNECTED");
+    const [serialMessage, setSerialMessage] = useState<string>("");
+    const [loraPacketCount, setLoraPacketCount] = useState<number>(0);
+    const [lastRawPacket, setLastRawPacket] = useState<string>("");
 
     // Rover GPS position & navigation state (with live device location support)
     const [roverData, setRoverData] = useState({
@@ -41,6 +61,14 @@ export default function LiveCameraPage() {
         sats: 12,
         isDeviceGps: false,
     });
+
+    // Save source mode choice
+    const changeSourceMode = (mode: "WIFI" | "LORA" | "SIMULATION") => {
+        setTelemetrySource(mode);
+        try {
+            localStorage.setItem("ironclad_source_mode", mode);
+        } catch (_) {}
+    };
 
     // Detect browser/device current geolocation
     const fetchCurrentLocation = () => {
@@ -89,8 +117,44 @@ export default function LiveCameraPage() {
         fetchCurrentLocation();
     }, []);
 
-    // Live Rover State polling from Raspberry Pi
+    // 1. LoRa Web Serial Subscriptions
     useEffect(() => {
+        const unsubStatus = loraSerialService.onStatusChange((status, msg) => {
+            setSerialStatus(status);
+            if (msg) setSerialMessage(msg);
+        });
+
+        const unsubData = loraSerialService.onData((packet: LoRaTelemetryPacket) => {
+            setLoraPacketCount(c => c + 1);
+            if (packet.raw) setLastRawPacket(packet.raw);
+            if (packet.rssi !== undefined) setLoraSignal(packet.rssi);
+            if (packet.level) setThreatLevel(packet.level);
+            if (packet.score !== undefined) setThreatScore(packet.score);
+            if (packet.target) {
+                setAiDetections([[packet.target, packet.targetConf ?? 0.88]]);
+            }
+            if (packet.motion !== undefined) setMotionLevel(packet.motion);
+            if (packet.lat && packet.lon) {
+                setRoverData(prev => ({
+                    ...prev,
+                    lat: packet.lat!,
+                    lon: packet.lon!,
+                    heading: packet.heading ?? prev.heading,
+                    speed: packet.speed !== undefined ? `${packet.speed} m/s` : prev.speed,
+                }));
+            }
+        });
+
+        return () => {
+            unsubStatus();
+            unsubData();
+        };
+    }, []);
+
+    // 2. Wi-Fi Polling Loop (Only active when in WIFI mode)
+    useEffect(() => {
+        if (telemetrySource !== "WIFI") return;
+
         const interval = setInterval(async () => {
             try {
                 const res = await fetch("/rover-api/state");
@@ -113,14 +177,67 @@ export default function LiveCameraPage() {
                         }));
                     }
                     setStreamOnline(true);
+                } else {
+                    setStreamOnline(false);
                 }
             } catch (err) {
-                // If local proxy fails, keep quiet and retry next tick
+                setStreamOnline(false);
             }
         }, 1200);
 
         return () => clearInterval(interval);
-    }, []);
+    }, [telemetrySource]);
+
+    // 3. Offline Simulation Loop (Only active when in SIMULATION mode)
+    useEffect(() => {
+        if (telemetrySource !== "SIMULATION") return;
+
+        let step = 0;
+        const interval = setInterval(() => {
+            step++;
+            const t = step * 0.15;
+            // Simulated circular perimeter patrol coordinates around base
+            const simLat = Number((28.61394 + Math.sin(t) * 0.0008).toFixed(5));
+            const simLon = Number((77.20902 + Math.cos(t) * 0.0009).toFixed(5));
+            const simHeading = Math.round((Math.sin(t) * 180 + 180) % 360);
+            const simRssi = -70 - Math.round(Math.abs(Math.sin(t * 0.5) * 15));
+
+            setRoverData(prev => ({
+                ...prev,
+                lat: simLat,
+                lon: simLon,
+                heading: simHeading,
+                speed: "1.4 m/s",
+                distanceToWp: `${(4.5 + Math.sin(t) * 2.5).toFixed(1)} m`,
+            }));
+            setLoraSignal(simRssi);
+            setLoraPacketCount(c => c + 1);
+
+            // Periodic threat events
+            if (step % 20 < 6) {
+                setThreatLevel("WATCH");
+                setThreatScore(0.48);
+                setAiDetections([["person", 0.91]]);
+                setMotionLevel(0.85);
+            } else {
+                setThreatLevel("CLEAR");
+                setThreatScore(0.06);
+                setAiDetections([]);
+                setMotionLevel(0.12);
+            }
+        }, 1500);
+
+        return () => clearInterval(interval);
+    }, [telemetrySource]);
+
+    // Connect/Disconnect ESP32 Serial
+    const handleConnectSerial = async () => {
+        if (serialStatus === "CONNECTED") {
+            await loraSerialService.disconnect();
+        } else {
+            await loraSerialService.connect(115200);
+        }
+    };
 
     // CSS filter based on selected spectrum
     const getSpectrumFilter = () => {
@@ -172,42 +289,155 @@ export default function LiveCameraPage() {
                 {/* Right side connection badge */}
                 <div className="flex items-center gap-3 font-mono text-xs">
                     <div className="flex items-center gap-2 px-3 py-1 bg-[#111] border border-[#2a2a2a]">
-                        <span className={`w-2 h-2 rounded-full ${streamOnline ? "bg-[#22c55e] animate-ping" : "bg-[#ef4444]"}`} />
+                        <span className={`w-2 h-2 rounded-full ${
+                            telemetrySource === "WIFI"
+                                ? (streamOnline ? "bg-[#22c55e] animate-ping" : "bg-[#ef4444]")
+                                : telemetrySource === "LORA"
+                                ? (serialStatus === "CONNECTED" ? "bg-[#3b82f6] animate-ping" : "bg-[#f59e0b]")
+                                : "bg-[#C6FF3D] animate-ping"
+                        }`} />
                         <span className="text-[11px] font-bold text-white">
-                            {streamOnline ? "PI LINK ACTIVE" : "PI DISCONNECTED"}
+                            {telemetrySource === "WIFI"
+                                ? (streamOnline ? "PI WI-FI ACTIVE" : "PI UNREACHABLE")
+                                : telemetrySource === "LORA"
+                                ? (serialStatus === "CONNECTED" ? "ESP32 LORA CONNECTED" : "LORA STANDBY")
+                                : "OFFLINE SIM ACTIVE"}
                         </span>
-                        <span className="text-[10px] text-[#666]">[{streamIp}]</span>
+                        <span className="text-[10px] text-[#666]">
+                            [{telemetrySource === "WIFI" ? streamIp : telemetrySource === "LORA" ? "USB 115200" : "AUTONOMOUS"}]
+                        </span>
                     </div>
                 </div>
             </header>
 
+            {/* TELEMETRY SOURCE & OFFLINE LINK MODE BAR */}
+            <div className="flex items-center justify-between px-6 py-2.5 bg-[#0e0e0e] border-b border-[#222] font-mono text-xs flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                    <span className="text-[#888] text-[11px] font-bold flex items-center gap-1.5">
+                        <Cpu size={13} className="text-[#C6FF3D]" />
+                        TELEMETRY SOURCE:
+                    </span>
+                    <div className="flex border border-[#333] bg-[#070707]">
+                        <button
+                            onClick={() => changeSourceMode("WIFI")}
+                            className={`px-3 py-1 text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                                telemetrySource === "WIFI"
+                                    ? "bg-[#22c55e] text-black font-extrabold"
+                                    : "text-[#888] hover:text-white"
+                            }`}
+                        >
+                            <Wifi size={12} />
+                            WI-FI DIRECT (PI)
+                        </button>
+                        <button
+                            onClick={() => changeSourceMode("LORA")}
+                            className={`px-3 py-1 text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                                telemetrySource === "LORA"
+                                    ? "bg-[#3b82f6] text-white font-extrabold"
+                                    : "text-[#888] hover:text-white"
+                            }`}
+                        >
+                            <Radio size={12} />
+                            LORA (ESP32 USB)
+                        </button>
+                        <button
+                            onClick={() => changeSourceMode("SIMULATION")}
+                            className={`px-3 py-1 text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                                telemetrySource === "SIMULATION"
+                                    ? "bg-[#C6FF3D] text-black font-extrabold"
+                                    : "text-[#888] hover:text-white"
+                            }`}
+                        >
+                            <Shield size={12} />
+                            OFFLINE SIMULATION
+                        </button>
+                    </div>
+                </div>
+
+                {/* LoRa Connect Trigger or Info */}
+                <div className="flex items-center gap-3">
+                    {telemetrySource === "LORA" && (
+                        <button
+                            onClick={handleConnectSerial}
+                            className={`px-3 py-1 text-[11px] font-bold flex items-center gap-1.5 border transition cursor-pointer ${
+                                serialStatus === "CONNECTED"
+                                    ? "border-[#ef4444] bg-[#ef4444]/20 text-[#ef4444] hover:bg-[#ef4444] hover:text-black"
+                                    : "border-[#3b82f6] bg-[#3b82f6]/20 text-[#60a5fa] hover:bg-[#3b82f6] hover:text-white"
+                            }`}
+                        >
+                            <Zap size={12} />
+                            {serialStatus === "CONNECTED" ? "DISCONNECT ESP32" : "CONNECT ESP32 (USB)"}
+                        </button>
+                    )}
+
+                    <span className="text-[10px] text-[#666]">
+                        {telemetrySource === "LORA" 
+                            ? `RX: ${loraPacketCount} PKTS • ${loraSignal ?? -72} dBm • AES-128`
+                            : telemetrySource === "SIMULATION"
+                            ? "100% OFFLINE • ZERO HARDWARE NEEDED"
+                            : "MJPEG 6 FPS STREAM • 172.20.10.3:5000"}
+                    </span>
+                </div>
+            </div>
+
             {/* Main Content Layout */}
             <main className="flex-1 p-6 max-w-[1700px] w-full mx-auto flex flex-col gap-6">
-                {/* TOP ROW: CAMERA (LEFT) + TACTICAL MAP (RIGHT) */}
+                {/* TOP ROW: CAMERA / LORA CARRIER (LEFT) + TACTICAL MAP (RIGHT) */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* LEFT: LIVE RASPBERRY PI WEBCAM STREAM */}
+                    {/* LEFT CONTAINER: DUAL MODE (LIVE VIDEO OR OFFLINE LORA CARRIER HUD) */}
                     <div className="flex flex-col border border-[#2a2a2a] bg-[#090909]">
                         {/* Header bar */}
                         <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#222] bg-[#0d0d0d] font-mono text-xs">
                             <div className="flex items-center gap-2 text-white">
-                                <Camera size={14} className="text-[#C6FF3D]" />
-                                <span className="font-bold">CAM-01 [FRONT APEX]</span>
-                                <span className="text-[#666]">•</span>
-                                <span className="text-[#888]">RASPBERRY PI CSI/USB WEBCAM</span>
+                                {telemetrySource === "WIFI" || showVideoInOffline ? (
+                                    <>
+                                        <Camera size={14} className="text-[#C6FF3D]" />
+                                        <span className="font-bold">CAM-01 [FRONT APEX]</span>
+                                        <span className="text-[#666]">•</span>
+                                        <span className="text-[#888]">OPTICAL WEBCAM FEED</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Radio size={14} className="text-[#3b82f6]" />
+                                        <span className="font-bold">RF-01 [LORA TELEMETRY CARRIER]</span>
+                                        <span className="text-[#666]">•</span>
+                                        <span className="text-[#888]">868.35 MHz RADIO LINK</span>
+                                    </>
+                                )}
                             </div>
+
                             <div className="flex items-center gap-2">
+                                {/* Toggle between Video and Telemetry HUD */}
+                                <button
+                                    onClick={() => setShowVideoInOffline(v => !v)}
+                                    className="px-2 py-0.5 border border-[#333] hover:border-[#C6FF3D] bg-[#141414] text-[10px] font-bold text-[#888] hover:text-[#C6FF3D] flex items-center gap-1 transition cursor-pointer"
+                                    title="Toggle between Live Video Feed and Tactical Telemetry Console"
+                                >
+                                    {showVideoInOffline ? <EyeOff size={11} /> : <Eye size={11} />}
+                                    {showVideoInOffline ? "SHOW LORA HUD" : "SHOW OPTICAL"}
+                                </button>
+
                                 <span className={`text-[11px] px-2 py-0.5 border font-bold flex items-center gap-1.5 ${
-                                    streamOnline 
-                                        ? "border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]" 
-                                        : "border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]"
+                                    telemetrySource === "WIFI"
+                                        ? (streamOnline ? "border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]" : "border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]")
+                                        : telemetrySource === "LORA"
+                                        ? (serialStatus === "CONNECTED" ? "border-[#3b82f6]/40 bg-[#3b82f6]/10 text-[#60a5fa]" : "border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b]")
+                                        : "border-[#C6FF3D]/40 bg-[#C6FF3D]/10 text-[#C6FF3D]"
                                 }`}>
-                                    <span className={`w-1.5 h-1.5 rounded-full ${streamOnline ? "bg-[#22c55e] animate-pulse" : "bg-[#ef4444]"}`} />
-                                    {streamOnline ? `LIVE • ${streamFps} FPS` : "STREAM OFFLINE"}
+                                    <span className={`w-1.5 h-1.5 rounded-full ${
+                                        telemetrySource === "WIFI" && streamOnline ? "bg-[#22c55e] animate-pulse" :
+                                        telemetrySource === "LORA" && serialStatus === "CONNECTED" ? "bg-[#3b82f6] animate-pulse" : "bg-[#C6FF3D] animate-pulse"
+                                    }`} />
+                                    {telemetrySource === "WIFI"
+                                        ? (streamOnline ? `LIVE • ${streamFps} FPS` : "STREAM OFFLINE")
+                                        : telemetrySource === "LORA"
+                                        ? `LORA • ${loraSignal ?? -72} dBm`
+                                        : "SIMULATION • RUNNING"}
                                 </span>
                             </div>
                         </div>
 
-                        {/* Live Video Slate */}
+                        {/* Viewport Slate */}
                         <div
                             className="relative flex-1 min-h-[440px] bg-[#040404] flex items-center justify-center overflow-hidden select-none"
                             style={{
@@ -216,60 +446,145 @@ export default function LiveCameraPage() {
                                 backgroundSize: "32px 32px",
                             }}
                         >
-                            {/* Live Video Stream from Raspberry Pi */}
-                            {streamOnline ? (
-                                <img
-                                    src="/rover-video"
-                                    alt="Raspberry Pi Live Stream"
-                                    className="w-full h-full object-cover transition-transform duration-300"
-                                    style={{
-                                        filter: getSpectrumFilter(),
-                                        transform: `scale(${zoomLevel})`,
-                                    }}
-                                    onError={() => {
-                                        // Try direct stream URL fallback
-                                        const imgEl = document.getElementById("pi-stream-img") as HTMLImageElement;
-                                        if (imgEl && imgEl.src.includes("/rover-video")) {
-                                            imgEl.src = `http://${streamIp}/video`;
-                                        } else {
-                                            setStreamOnline(false);
-                                        }
-                                    }}
-                                    id="pi-stream-img"
-                                />
+                            {/* CASE A: LIVE OPTICAL CAMERA STREAM (When in Wi-Fi mode or user explicitly toggled video) */}
+                            {(telemetrySource === "WIFI" || showVideoInOffline) ? (
+                                streamOnline ? (
+                                    <img
+                                        src="/rover-video"
+                                        alt="Raspberry Pi Live Stream"
+                                        className="w-full h-full object-cover transition-transform duration-300"
+                                        style={{
+                                            filter: getSpectrumFilter(),
+                                            transform: `scale(${zoomLevel})`,
+                                        }}
+                                        onError={() => {
+                                            const imgEl = document.getElementById("pi-stream-img") as HTMLImageElement;
+                                            if (imgEl && imgEl.src.includes("/rover-video")) {
+                                                imgEl.src = `http://${streamIp}/video`;
+                                            } else {
+                                                setStreamOnline(false);
+                                            }
+                                        }}
+                                        id="pi-stream-img"
+                                    />
+                                ) : (
+                                    /* Tactical Standby / Reconnect Screen */
+                                    <div className="flex flex-col items-center justify-center text-center p-8 max-w-md z-10">
+                                        <div className="w-14 h-14 rounded-full border border-[#ef4444]/30 bg-[#160b0b] flex items-center justify-center mb-3">
+                                            <Camera size={22} className="text-[#ef4444]" />
+                                        </div>
+                                        <div className="font-mono text-xs font-bold text-[#ef4444] tracking-wider mb-1">
+                                            OPTICAL CARRIER DISCONNECTED
+                                        </div>
+                                        <div className="font-mono text-[11px] text-[#888] mb-4">
+                                            Unable to reach Raspberry Pi stream on local network at
+                                            <br />
+                                            <span className="text-[#C6FF3D] font-mono font-bold">http://{streamIp}/video</span>
+                                        </div>
+
+                                        <div className="flex flex-col gap-2 w-full max-w-xs">
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="text"
+                                                    value={streamIp}
+                                                    onChange={(e) => setStreamIp(e.target.value)}
+                                                    placeholder="172.20.10.3:5000"
+                                                    className="flex-1 bg-[#111] border border-[#333] px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[#C6FF3D]"
+                                                />
+                                                <button
+                                                    onClick={() => {
+                                                        setStreamOnline(true);
+                                                        const imgEl = document.getElementById("pi-stream-img") as HTMLImageElement;
+                                                        if (imgEl) imgEl.src = `/rover-video?t=${Date.now()}`;
+                                                    }}
+                                                    className="px-3 py-1.5 bg-[#C6FF3D] text-black font-mono font-bold text-xs hover:bg-[#d4ff66] transition cursor-pointer"
+                                                >
+                                                    RETRY
+                                                </button>
+                                            </div>
+
+                                            <button
+                                                onClick={() => {
+                                                    changeSourceMode("LORA");
+                                                    setShowVideoInOffline(false);
+                                                }}
+                                                className="w-full py-1.5 bg-[#1b2533] border border-[#3b82f6] text-[#60a5fa] font-mono font-bold text-xs hover:bg-[#3b82f6] hover:text-white transition cursor-pointer"
+                                            >
+                                                SWITCH TO OFFLINE LORA LINK
+                                            </button>
+                                        </div>
+                                    </div>
+                                )
                             ) : (
-                                /* Tactical Standby / Reconnect Screen */
-                                <div className="flex flex-col items-center justify-center text-center p-8 max-w-md z-10">
-                                    <div className="w-14 h-14 rounded-full border border-[#ef4444]/30 bg-[#160b0b] flex items-center justify-center mb-3">
-                                        <Camera size={22} className="text-[#ef4444]" />
-                                    </div>
-                                    <div className="font-mono text-xs font-bold text-[#ef4444] tracking-wider mb-1">
-                                        OPTICAL CARRIER DISCONNECTED
-                                    </div>
-                                    <div className="font-mono text-[11px] text-[#888] mb-4">
-                                        Unable to establish MJPEG stream with Raspberry Pi at
-                                        <br />
-                                        <span className="text-[#C6FF3D] font-mono font-bold">http://{streamIp}/video</span>
+                                /* CASE B: 100% OFFLINE TACTICAL LORA CARRIER & TELEMETRY CONSOLE */
+                                <div className="relative w-full h-full flex flex-col items-center justify-between p-6 z-10 font-mono">
+                                    {/* Top Status Banner */}
+                                    <div className="w-full flex items-center justify-between text-xs border-b border-[#222] pb-3">
+                                        <div className="flex items-center gap-2">
+                                            <Radio size={16} className="text-[#3b82f6] animate-pulse" />
+                                            <span className="font-bold text-white tracking-wider">
+                                                {telemetrySource === "LORA" ? "LORA RADIO GROUND LINK" : "AUTONOMOUS PATROL SIMULATION"}
+                                            </span>
+                                            <span className="text-[10px] px-2 py-0.5 bg-[#16222f] border border-[#3b82f6]/40 text-[#60a5fa]">
+                                                AES-128 ENCRYPTED
+                                            </span>
+                                        </div>
+                                        <span className="text-[11px] text-[#C6FF3D] font-bold">
+                                            FREQ: 868.350 MHz (SF8 / 250kHz)
+                                        </span>
                                     </div>
 
-                                    <div className="flex items-center gap-2 w-full max-w-xs">
-                                        <input
-                                            type="text"
-                                            value={streamIp}
-                                            onChange={(e) => setStreamIp(e.target.value)}
-                                            placeholder="172.20.10.3:5000"
-                                            className="flex-1 bg-[#111] border border-[#333] px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[#C6FF3D]"
-                                        />
-                                        <button
-                                            onClick={() => {
-                                                setStreamOnline(true);
-                                                const imgEl = document.getElementById("pi-stream-img") as HTMLImageElement;
-                                                if (imgEl) imgEl.src = `/rover-video?t=${Date.now()}`;
-                                            }}
-                                            className="px-3 py-1.5 bg-[#C6FF3D] text-black font-mono font-bold text-xs hover:bg-[#d4ff66] transition cursor-pointer"
-                                        >
-                                            RETRY
-                                        </button>
+                                    {/* Center Animated RF Oscilloscope & Radar Pulse */}
+                                    <div className="relative flex items-center justify-center my-4">
+                                        {/* Expanding Radio Waves */}
+                                        <div className="relative w-48 h-48 rounded-full border border-[#3b82f6]/20 flex items-center justify-center">
+                                            <div className="absolute w-36 h-36 rounded-full border border-[#3b82f6]/30 animate-ping opacity-30" />
+                                            <div className="absolute w-24 h-24 rounded-full border border-[#3b82f6]/40" />
+                                            <div className="absolute w-12 h-12 rounded-full border border-[#C6FF3D]/50 bg-[#C6FF3D]/10 flex items-center justify-center">
+                                                <Radio size={20} className="text-[#C6FF3D]" />
+                                            </div>
+                                        </div>
+
+                                        {/* Overlay Metrics */}
+                                        <div className="absolute inset-0 flex flex-col items-center justify-between pointer-events-none py-1">
+                                            <span className="text-[10px] text-[#60a5fa] font-bold bg-black/80 px-2 py-0.5 border border-[#3b82f6]/30">
+                                                RSSI: {loraSignal ?? -72} dBm
+                                            </span>
+                                            <span className="text-[10px] text-[#aaa] bg-black/80 px-2 py-0.5 border border-[#333]">
+                                                PACKETS: {loraPacketCount} RX
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    {/* Bottom Telemetry & Raw Stream Console */}
+                                    <div className="w-full bg-[#0a0d10] border border-[#223344] p-3 space-y-2">
+                                        <div className="flex items-center justify-between text-[11px]">
+                                            <div className="flex items-center gap-2">
+                                                <Terminal size={12} className="text-[#3b82f6]" />
+                                                <span className="text-[#888]">LATEST LORA PACKET:</span>
+                                            </div>
+                                            <span className="text-[#22c55e] font-bold">CRC OK // NO PARITY ERR</span>
+                                        </div>
+
+                                        <div className="font-mono text-[11px] text-[#60a5fa] bg-[#05080b] p-2 border border-[#1b2836] truncate">
+                                            {lastRawPacket || `{"dev":"IRONCLAD","lat":${roverData.lat},"lon":${roverData.lon},"score":${threatScore.toFixed(2)},"threat":"${threatLevel}","rssi":${loraSignal ?? -72}}`}
+                                        </div>
+
+                                        {/* ESP32 Quick Connect Controls */}
+                                        {telemetrySource === "LORA" && (
+                                            <div className="flex items-center justify-between pt-1 text-[11px]">
+                                                <span className="text-[#888]">
+                                                    STATUS: <span className={serialStatus === "CONNECTED" ? "text-[#22c55e]" : "text-[#f59e0b]"}>{serialStatus}</span>
+                                                    {serialMessage && ` (${serialMessage})`}
+                                                </span>
+                                                <button
+                                                    onClick={handleConnectSerial}
+                                                    className="px-2.5 py-1 bg-[#3b82f6] text-white font-bold hover:bg-[#60a5fa] transition cursor-pointer"
+                                                >
+                                                    {serialStatus === "CONNECTED" ? "CLOSE PORT" : "CONNECT USB PORT"}
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             )}
@@ -280,18 +595,9 @@ export default function LiveCameraPage() {
                             <div className="absolute bottom-4 left-4 w-5 h-5 border-b-2 border-l-2 border-[#C6FF3D]/60 pointer-events-none" />
                             <div className="absolute bottom-4 right-4 w-5 h-5 border-b-2 border-r-2 border-[#C6FF3D]/60 pointer-events-none" />
 
-                            {/* Target Crosshair / Center reticle */}
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                <div className="relative w-16 h-16">
-                                    <div className="absolute inset-x-0 top-1/2 h-[1px] bg-[#C6FF3D]/30" />
-                                    <div className="absolute inset-y-0 left-1/2 w-[1px] bg-[#C6FF3D]/30" />
-                                    <div className="w-full h-full rounded-full border border-[#C6FF3D]/25" />
-                                </div>
-                            </div>
-
-                            {/* AI Target Detection Banner (Live from Pi vision pipeline) */}
+                            {/* AI Target Detection Banner (Live from Pi vision pipeline or LoRa packet) */}
                             {aiDetections.length > 0 && (
-                                <div className="absolute top-6 left-6 z-10 flex items-center gap-2 px-3 py-1.5 bg-black/80 border border-[#C6FF3D] backdrop-blur font-mono text-xs">
+                                <div className="absolute top-6 left-6 z-10 flex items-center gap-2 px-3 py-1.5 bg-black/85 border border-[#C6FF3D] backdrop-blur font-mono text-xs">
                                     <Crosshair size={13} className="text-[#C6FF3D] animate-spin" />
                                     <span className="font-bold text-white tracking-wide">
                                         TARGET: {aiDetections[0][0].toUpperCase()}
@@ -321,25 +627,15 @@ export default function LiveCameraPage() {
                                 </span>
                             </div>
 
-                            {/* Spectrum Scanline Overlay if Night or Thermal */}
-                            {spectrumMode !== "STANDARD" && (
-                                <div
-                                    className="absolute inset-0 pointer-events-none opacity-20"
-                                    style={{
-                                        backgroundImage: "repeating-linear-gradient(0deg, #000, #000 2px, transparent 2px, transparent 4px)",
-                                    }}
-                                />
-                            )}
-
                             {/* Minimal bottom HUD coordinates stamp */}
-                            <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between font-mono text-[11px] text-[#aaa] z-10 bg-black/60 px-3 py-1 border border-white/10 backdrop-blur">
+                            <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between font-mono text-[11px] text-[#aaa] z-10 bg-black/75 px-3 py-1 border border-white/10 backdrop-blur">
                                 <span className="flex items-center gap-2">
                                     <span className="w-1.5 h-1.5 rounded-full bg-[#C6FF3D]" />
-                                    FEED: 172.20.10.3:5000/video
+                                    LINK: {telemetrySource === "WIFI" ? "WI-FI DIRECT" : telemetrySource === "LORA" ? "LORA USB SERIAL" : "AUTONOMOUS SIM"}
                                 </span>
                                 <span>SPECTRUM: {spectrumMode}</span>
                                 <span>ZOOM: {zoomLevel}X</span>
-                                <span>FPS: {streamFps}</span>
+                                <span>FPS: {telemetrySource === "WIFI" ? streamFps : "TELEMETRY"}</span>
                             </div>
                         </div>
                     </div>

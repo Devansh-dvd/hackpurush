@@ -189,6 +189,8 @@ export default function TacticalWorldMap({
         renderOverlays(mapInstanceRef.current, roverLat, roverLon, roverHeading);
     }, [roverLat, roverLon, roverHeading]);
 
+    const [mapMode, setMapMode] = useState<"OSM" | "OFFLINE_GRID">("OSM");
+
     const zoomIn = () => mapInstanceRef.current?.zoomIn();
     const zoomOut = () => mapInstanceRef.current?.zoomOut();
     const recenterRover = () => {
@@ -201,7 +203,9 @@ export default function TacticalWorldMap({
             <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#222] bg-[#0d0d0d] font-mono text-xs flex-wrap gap-2">
                 <div className="flex items-center gap-2 text-white">
                     <MapPin size={14} className="text-[#C6FF3D]" />
-                    <span className="font-bold">OPENSTREETMAP // SENTRY GIS</span>
+                    <span className="font-bold">
+                        {mapMode === "OSM" ? "OPENSTREETMAP // SENTRY GIS" : "OFFLINE TACTICAL VECTOR GRID"}
+                    </span>
                     <span className="text-[#666]">•</span>
                     <span className={isDeviceGps ? "text-[#22c55e] font-bold" : "text-[#C6FF3D]"}>
                         {isDeviceGps ? "LIVE LOCATION ACQUIRED" : sector}
@@ -209,58 +213,168 @@ export default function TacticalWorldMap({
                 </div>
 
                 <div className="flex items-center gap-2">
+                    {/* Layer Mode Toggle: Online OSM vs 100% Offline Vector Grid */}
+                    <div className="flex border border-[#333] bg-[#111]">
+                        <button
+                            onClick={() => setMapMode("OSM")}
+                            className={`px-2.5 py-1 text-[10px] font-bold transition cursor-pointer ${
+                                mapMode === "OSM"
+                                    ? "bg-[#C6FF3D] text-black"
+                                    : "text-[#888] hover:text-white"
+                            }`}
+                        >
+                            ONLINE OSM
+                        </button>
+                        <button
+                            onClick={() => setMapMode("OFFLINE_GRID")}
+                            className={`px-2.5 py-1 text-[10px] font-bold transition cursor-pointer ${
+                                mapMode === "OFFLINE_GRID"
+                                    ? "bg-[#C6FF3D] text-black"
+                                    : "text-[#888] hover:text-white"
+                            }`}
+                        >
+                            OFFLINE GRID
+                        </button>
+                    </div>
+
                     {/* GPS Detect Trigger */}
                     {onDetectLocation && (
                         <button
                             onClick={onDetectLocation}
                             disabled={gpsLoading}
-                            className="px-2.5 py-1 border border-[#C6FF3D] bg-[#C6FF3D]/10 hover:bg-[#C6FF3D] hover:text-black transition text-[11px] font-bold text-[#C6FF3D] flex items-center gap-1.5 cursor-pointer"
+                            className="px-2.5 py-1 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition text-[10px] font-bold text-[#888] flex items-center gap-1.5 cursor-pointer"
                             title="Detect Live Browser / Device GPS Location"
                         >
-                            <Navigation size={12} className={gpsLoading ? "animate-spin" : ""} />
-                            {gpsLoading ? "ACQUIRING..." : isDeviceGps ? "RE-DETECT GPS" : "USE MY CURRENT LOCATION"}
+                            <Navigation size={11} className={gpsLoading ? "animate-spin" : ""} />
+                            {gpsLoading ? "ACQUIRING..." : isDeviceGps ? "RE-DETECT GPS" : "MY GPS"}
                         </button>
                     )}
-
-                    {/* OpenStreetMap Dedicated Badge */}
-                    <span className="px-2.5 py-1 border border-[#C6FF3D] bg-[#C6FF3D]/15 text-[11px] font-bold text-[#C6FF3D]">
-                        OPENSTREETMAP
-                    </span>
                 </div>
             </div>
 
             {/* Map Viewport Container */}
             <div className="relative flex-1 min-h-[420px] w-full bg-[#050505] overflow-hidden">
-                {/* Leaflet DOM container */}
-                <div ref={mapContainerRef} className="w-full h-full min-h-[420px]" style={{ zIndex: 1 }} />
+                {/* 1. Leaflet OpenStreetMap Container */}
+                <div 
+                    ref={mapContainerRef} 
+                    className={`w-full h-full min-h-[420px] ${mapMode === "OFFLINE_GRID" ? "hidden" : "block"}`} 
+                    style={{ zIndex: 1 }} 
+                />
 
-                {/* Floating Map Controls */}
-                <div className="absolute top-3 right-3 flex flex-col gap-1.5 font-mono z-[1000]">
-                    <button
-                        onClick={zoomIn}
-                        className="w-8 h-8 bg-black/85 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition flex items-center justify-center text-white text-xs cursor-pointer shadow-md"
-                        title="Zoom In"
+                {/* 2. 100% Offline Tactical Vector Radar Grid (Zero Internet Needed) */}
+                {mapMode === "OFFLINE_GRID" && (
+                    <div 
+                        className="relative w-full h-full min-h-[420px] flex items-center justify-center bg-[#07090b] overflow-hidden select-none"
+                        style={{
+                            backgroundImage: "linear-gradient(to right, #111a1f 1px, transparent 1px), linear-gradient(to bottom, #111a1f 1px, transparent 1px)",
+                            backgroundSize: "40px 40px",
+                        }}
                     >
-                        <ZoomIn size={14} />
-                    </button>
-                    <button
-                        onClick={zoomOut}
-                        className="w-8 h-8 bg-black/85 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition flex items-center justify-center text-white text-xs cursor-pointer shadow-md"
-                        title="Zoom Out"
-                    >
-                        <ZoomOut size={14} />
-                    </button>
-                    <button
-                        onClick={recenterRover}
-                        className="w-8 h-8 bg-black/85 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition flex items-center justify-center text-white text-xs cursor-pointer shadow-md"
-                        title="Recenter on Rover"
-                    >
-                        <Crosshair size={14} />
-                    </button>
-                </div>
+                        {/* Vector SVG Range Rings & Compass */}
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none" viewBox="0 0 800 500">
+                            {/* Outer Range Rings */}
+                            <circle cx="400" cy="250" r="220" fill="none" stroke="#1f2d36" strokeWidth="1" strokeDasharray="4 4" />
+                            <circle cx="400" cy="250" r="160" fill="none" stroke="#223945" strokeWidth="1" />
+                            <circle cx="400" cy="250" r="100" fill="none" stroke="#2b4756" strokeWidth="1" strokeDasharray="2 2" />
+                            <circle cx="400" cy="250" r="40" fill="none" stroke="#375d71" strokeWidth="1" />
+
+                            {/* Range Distance Labels */}
+                            <text x="405" y="245" fill="#4b7086" fontSize="9" fontFamily="monospace">40m</text>
+                            <text x="405" y="185" fill="#4b7086" fontSize="9" fontFamily="monospace">100m</text>
+                            <text x="405" y="125" fill="#4b7086" fontSize="9" fontFamily="monospace">250m</text>
+                            <text x="405" y="65" fill="#4b7086" fontSize="9" fontFamily="monospace">500m</text>
+
+                            {/* Cardinal Crosshairs */}
+                            <line x1="400" y1="20" x2="400" y2="480" stroke="#1c2a32" strokeWidth="1" />
+                            <line x1="120" y1="250" x2="680" y2="250" stroke="#1c2a32" strokeWidth="1" />
+
+                            {/* Cardinal Headings */}
+                            <text x="400" y="32" textAnchor="middle" fill="#C6FF3D" fontSize="12" fontWeight="bold" fontFamily="monospace">000° NORTH</text>
+                            <text x="660" y="254" fill="#64889c" fontSize="10" fontFamily="monospace">090° E</text>
+                            <text x="400" y="475" textAnchor="middle" fill="#64889c" fontSize="10" fontFamily="monospace">180° S</text>
+                            <text x="140" y="254" fill="#64889c" fontSize="10" fontFamily="monospace">270° W</text>
+
+                            {/* Perimeter Polygon Boundary */}
+                            <polygon 
+                                points="290,130 520,110 570,360 250,380" 
+                                fill="rgba(220,38,38,0.06)" 
+                                stroke="#dc2626" 
+                                strokeWidth="1.5" 
+                                strokeDasharray="5 5" 
+                            />
+
+                            {/* Waypoint Path Lines */}
+                            <polyline 
+                                points="320,320 400,250 490,170 540,220 510,340" 
+                                fill="none" 
+                                stroke="#2563eb" 
+                                strokeWidth="2" 
+                                strokeDasharray="6 4" 
+                            />
+
+                            {/* Waypoints */}
+                            {[
+                                { x: 320, y: 320, label: "WP-01" },
+                                { x: 400, y: 250, label: "WP-02 [ACTIVE]" },
+                                { x: 490, y: 170, label: "WP-03" },
+                                { x: 540, y: 220, label: "WP-04" },
+                                { x: 510, y: 340, label: "WP-05" },
+                            ].map((wp, i) => (
+                                <g key={i}>
+                                    <circle cx={wp.x} cy={wp.y} r="5" fill="#2563eb" stroke="#fff" strokeWidth="1" />
+                                    <text x={wp.x + 8} y={wp.y + 4} fill="#88b4d8" fontSize="10" fontFamily="monospace" fontWeight="bold">
+                                        {wp.label}
+                                    </text>
+                                </g>
+                            ))}
+
+                            {/* Rover Heading Directional Cone */}
+                            <g transform={`translate(400, 250) rotate(${roverHeading})`}>
+                                <path d="M 0 0 L -25 -70 L 25 -70 Z" fill="rgba(198,255,61,0.18)" />
+                                <line x1="0" y1="0" x2="0" y2="-80" stroke="#C6FF3D" strokeWidth="1.5" strokeDasharray="3 3" />
+                                <circle cx="0" cy="0" r="7" fill="#C6FF3D" stroke="#000" strokeWidth="2" />
+                            </g>
+                        </svg>
+
+                        {/* Center Rover Overlay Badge */}
+                        <div className="absolute z-10 bottom-12 px-3 py-1.5 bg-black/85 border border-[#C6FF3D] font-mono text-[11px] text-white flex items-center gap-2 backdrop-blur">
+                            <span className="w-2 h-2 rounded-full bg-[#C6FF3D] animate-ping" />
+                            <span>OFFLINE GIS LOCK:</span>
+                            <span className="text-[#C6FF3D] font-bold">{roverLat.toFixed(5)}°N, {roverLon.toFixed(5)}°E</span>
+                            <span className="text-[#888]">HDG: {roverHeading}°</span>
+                        </div>
+                    </div>
+                )}
+
+                {/* Floating Map Controls (OSM mode) */}
+                {mapMode === "OSM" && (
+                    <div className="absolute top-3 right-3 flex flex-col gap-1.5 font-mono z-[1000]">
+                        <button
+                            onClick={zoomIn}
+                            className="w-8 h-8 bg-black/85 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition flex items-center justify-center text-white text-xs cursor-pointer shadow-md"
+                            title="Zoom In"
+                        >
+                            <ZoomIn size={14} />
+                        </button>
+                        <button
+                            onClick={zoomOut}
+                            className="w-8 h-8 bg-black/85 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition flex items-center justify-center text-white text-xs cursor-pointer shadow-md"
+                            title="Zoom Out"
+                        >
+                            <ZoomOut size={14} />
+                        </button>
+                        <button
+                            onClick={recenterRover}
+                            className="w-8 h-8 bg-black/85 border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition flex items-center justify-center text-white text-xs cursor-pointer shadow-md"
+                            title="Recenter on Rover"
+                        >
+                            <Crosshair size={14} />
+                        </button>
+                    </div>
+                )}
 
                 {/* Floating Bottom Left: Real Time Cursor GIS Coordinates */}
-                <div className="absolute bottom-3 left-3 bg-black/85 border border-[#262626] px-2.5 py-1 text-[10px] font-mono text-[#aaa] z-[1000] flex items-center gap-2">
+                <div className="absolute bottom-3 left-3 bg-black/85 border border-[#262626] px-2.5 py-1 text-[10px] font-mono text-[#aaa] z-[1000] flex items-center gap-2 backdrop-blur">
                     <Compass size={11} className="text-[#C6FF3D]" />
                     <span>
                         GIS:{" "}
@@ -268,11 +382,11 @@ export default function TacticalWorldMap({
                             ? `${cursorCoords.lat.toFixed(5)}° N, ${cursorCoords.lon.toFixed(5)}° E`
                             : `${roverLat.toFixed(5)}° N, ${roverLon.toFixed(5)}° E`}
                     </span>
-                    <span className="text-[#666]">| NO API KEY REQUIRED (OPENSTREETMAP)</span>
+                    <span className="text-[#666]">| {mapMode === "OSM" ? "ONLINE OSM" : "OFFLINE VECTOR RADAR"}</span>
                 </div>
 
                 {/* Floating Bottom Right: Map Legend */}
-                <div className="absolute bottom-3 right-3 bg-black/85 border border-[#262626] px-2.5 py-1 flex items-center gap-3 font-mono text-[10px] text-[#aaa] z-[1000]">
+                <div className="absolute bottom-3 right-3 bg-black/85 border border-[#262626] px-2.5 py-1 flex items-center gap-3 font-mono text-[10px] text-[#aaa] z-[1000] backdrop-blur">
                     <span className="flex items-center gap-1.5">
                         <span className="w-2 h-2 rounded-full bg-[#C6FF3D]" /> ROVER POS
                     </span>
