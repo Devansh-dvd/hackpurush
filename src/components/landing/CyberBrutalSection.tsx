@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Shield, ArrowUpRight } from "lucide-react";
 import RoboticArmGraphic from "./RoboticArmGraphic";
 import { Link } from "react-router-dom";
+import { useNetworkStatus } from "../../hooks/useNetworkStatus";
 
 function useClock(): Date {
     const [t, setT] = useState<Date>(new Date());
@@ -20,6 +21,7 @@ const pad = (n: number): string =>
 export default function CyberBrutalSection({ onViewTwin, onScrollToDrone, onScrollToHud }: { onViewTwin: () => void; onScrollToDrone: () => void; onScrollToHud: () => void }) {
     const time = useClock();
     const [glitch, setGlitch] = useState(false);
+    const { isOnline, toggleStatus } = useNetworkStatus();
 
     return (
         <section style={{ background: "#050505", color: "#e8e8e8", fontFamily: "'Space Grotesk', sans-serif" }} className="relative overflow-hidden">
@@ -40,12 +42,26 @@ export default function CyberBrutalSection({ onViewTwin, onScrollToDrone, onScro
                 <div className="hidden md:flex items-center gap-8 text-sm" style={{ fontFamily: "'JetBrains Mono', monospace", color: "#d0d0d0" }}>
                     <span className="hover:text-white cursor-pointer transition" onClick={onScrollToDrone}>ROVER 3D &amp; SENSORS</span>
                     <span className="hover:text-[#C6FF3D] cursor-pointer transition font-semibold" onClick={onScrollToHud}>MISSION DASHBOARD</span>
-                    <Link to="/camera" className="hover:text-[#C6FF3D] text-[#C6FF3D] transition font-semibold flex items-center gap-1.5">
-                        <span className="w-2 h-2 rounded-full bg-[#C6FF3D] animate-ping" />
-                        LIVE CAMERA
-                    </Link>
+                    {isOnline && (
+                        <Link to="/camera" className="hover:text-[#C6FF3D] text-[#C6FF3D] transition font-semibold flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-[#C6FF3D] animate-ping" />
+                            LIVE CAMERA
+                        </Link>
+                    )}
                 </div>
                 <div className="flex items-center gap-4">
+                    <button
+                        onClick={() => toggleStatus(!isOnline)}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono border transition cursor-pointer ${
+                            isOnline
+                                ? "border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e] hover:border-[#22c55e]"
+                                : "border-[#f59e0b]/50 bg-[#f59e0b]/10 text-[#f59e0b] hover:border-[#f59e0b]"
+                        }`}
+                        title="Click to toggle Online/Offline Mode"
+                    >
+                        <span className={`w-2 h-2 rounded-full ${isOnline ? "bg-[#22c55e] animate-pulse" : "bg-[#f59e0b]"}`} />
+                        <span>{isOnline ? "ONLINE" : "OFFLINE"}</span>
+                    </button>
                     <span className="hidden sm:inline text-sm" style={{ fontFamily: "'JetBrains Mono', monospace", color: "#b0b0b0" }}>
                         {pad(time.getHours())}:{pad(time.getMinutes())}:{pad(time.getSeconds())}
                     </span>
@@ -110,22 +126,24 @@ export default function CyberBrutalSection({ onViewTwin, onScrollToDrone, onScro
                             3D ROVER TWIN
                         </button>
 
-                        <Link
-                            to="/camera"
-                            className="
-                                flex items-center gap-2
-                                px-6 py-4
-                                text-base font-bold
-                                text-[#C6FF3D]
-                                border border-[#C6FF3D]/50
-                                hover:border-[#C6FF3D]
-                                hover:bg-[#C6FF3D]/10
-                                transition
-                            "
-                        >
-                            LIVE CAMERA
-                            <ArrowUpRight size={17} />
-                        </Link>
+                        {isOnline && (
+                            <Link
+                                to="/camera"
+                                className="
+                                    flex items-center gap-2
+                                    px-6 py-4
+                                    text-base font-bold
+                                    text-[#C6FF3D]
+                                    border border-[#C6FF3D]/50
+                                    hover:border-[#C6FF3D]
+                                    hover:bg-[#C6FF3D]/10
+                                    transition
+                                "
+                            >
+                                LIVE CAMERA
+                                <ArrowUpRight size={17} />
+                            </Link>
+                        )}
                     </div>
                 </div>
 
