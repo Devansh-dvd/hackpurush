@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
     Shield,
     Compass,
@@ -25,24 +25,49 @@ interface SubsystemHealth {
     metric: string;
 }
 
+export interface ArmJointConfig {
+    id: string;          // API command name: base, elbow, gripper, pan, shoulder, tilt, wrist_pitch, wrist_roll
+    label: string;       // Exact label matching user Pi website
+    min: number;
+    max: number;
+    defaultAngle: number;
+}
+
+export const ARM_JOINTS: ArmJointConfig[] = [
+    { id: "base", label: "base", min: 10, max: 170, defaultAngle: 90 },
+    { id: "elbow", label: "elbow", min: 30, max: 150, defaultAngle: 90 },
+    { id: "gripper", label: "gripper", min: 40, max: 140, defaultAngle: 90 },
+    { id: "pan", label: "pan", min: 10, max: 170, defaultAngle: 90 },
+    { id: "shoulder", label: "shoulder", min: 30, max: 150, defaultAngle: 90 },
+    { id: "tilt", label: "tilt", min: 40, max: 140, defaultAngle: 90 },
+    { id: "wrist_pitch", label: "wrist pitch", min: 10, max: 170, defaultAngle: 90 },
+    { id: "wrist_roll", label: "wrist roll", min: 10, max: 170, defaultAngle: 90 },
+];
+
 export default function HudSection() {
     // Autonomous patrol states
-    const [patrolActive, setPatrolActive] = useState(true);
+    const [patrolActive, setPatrolActive] = useState(false);
     const [emergencyStop, setEmergencyStop] = useState(false);
     const [currentWpIndex, setCurrentWpIndex] = useState(2);
     const [totalWaypoints, setTotalWaypoints] = useState(5);
-    const [statusLog, setStatusLog] = useState<string>("AUTONOMOUS PATROL ACTIVE — HEADING TO WP-02 [LAT 28.6139° N, LON 77.2090° E]");
+    const [statusLog, setStatusLog] = useState<string>("ROVER SYSTEM READY — STANDBY FOR COMMANDS");
 
-    // Robotic arm states
-    const [armEnabled, setArmEnabled] = useState(true);
-    const [activePreset, setActivePreset] = useState("HOME");
-    const [jointAngles, setJointAngles] = useState({
+    // 8-DOF Robotic arm states (synchronized with Raspberry Pi http://172.20.10.3:5000)
+    const [armEnabled, setArmEnabled] = useState(false);
+    const [armBusy, setArmBusy] = useState(false);
+    const [armError, setArmError] = useState("");
+    const [activePreset, setActivePreset] = useState("");
+    const isDraggingRef = useRef(false);
+
+    const [jointAngles, setJointAngles] = useState<Record<string, number>>({
         base: 90,
-        shoulder: 90,
         elbow: 90,
-        wristPitch: 90,
-        wristRoll: 90,
-        gripper: 40,
+        gripper: 90,
+        pan: 90,
+        shoulder: 90,
+        tilt: 90,
+        wrist_pitch: 90,
+        wrist_roll: 90,
     });
 
     // Threat intelligence state
@@ -52,61 +77,168 @@ export default function HudSection() {
     const subsystems: SubsystemHealth[] = [
         { name: "ESP32 SENSOR NODE", label: "ADC, Flame, Sound, DHT11, Ultrasonic", score: 99.4, status: "ok", metric: "3.3V / 4095 ADC" },
         { name: "ESP32 DRIVE NODE", label: "Dual H-Bridge, Encoder Feedback, RC Link", score: 100.0, status: "ok", metric: "24V Bus / 1000Hz" },
-        { name: "PCA9685 SERVO DRIVER", label: "16-Channel PWM I2C Controller (0x40)", score: 98.8, status: "ok", metric: "6 Servos Online" },
+        { name: "PCA9685 SERVO DRIVER", label: "16-Channel PWM I2C Controller (0x40)", score: 98.8, status: "ok", metric: "8 Servos Online" },
         { name: "SX1276 LORA 868MHz", label: "Long-Range Tactical Radio Ground Link", score: 96.2, status: "ok", metric: "-68 dBm / SF7" },
         { name: "EDGE AI VISION (YOLOv8)", label: "Neural Network Perimeter Threat Pipeline", score: 99.1, status: "ok", metric: "24.2 FPS / TensorRT" },
     ];
 
-    // Presets handler
-    const applyArmPreset = (name: string, angles: typeof jointAngles) => {
-        if (!armEnabled) {
-            setStatusLog("WARNING: CANNOT MOVE ARM — SAFETY INTERLOCK IS LOCKED");
-            return;
+    // Real Command Sender to Raspberry Pi via /rover-api/cmd (fallback to direct IP)
+    const sendRoverCmd = useCallback(async (payload: Record<string, any>) => {
+        try {
+            let res: Response;
+            try {
+                res = await fetch("/rover-api/cmd", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+            } catch {
+                res = await fetch("http://172.20.10.3:5000/api/cmd", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+            }
+            const data = await res.json();
+            if (!data.ok && data.msg) {
+                setArmError(data.msg);
+                setStatusLog(`ROVER ALERT: ${data.msg}`);
+            } else {
+                setArmError("");
+            }
+            return data;
+        } catch (err) {
+            console.error("Failed to send rover command:", err);
+            setArmError("Cannot reach the rover");
+            return { ok: false, msg: "Cannot reach the rover" };
         }
-        setActivePreset(name);
-        setJointAngles(angles);
-        setStatusLog(`ARM PRESET EXECUTED: [${name}] — SERVO BUS SYNCHRONIZED`);
+    }, []);
+
+    // Live background polling of Raspberry Pi arm and rover state
+    useEffect(() => {
+        const interval = setInterval(async () => {
+            try {
+                let res: Response;
+                try {
+                    res = await fetch("/rover-api/state");
+                } catch {
+                    res = await fetch("http://172.20.10.3:5000/api/state");
+                }
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.level) setThreatLevel(data.level);
+                    if (data.mode) {
+                        setPatrolActive(Boolean(data.patrol));
+                        setEmergencyStop(data.mode === "STOP");
+                    }
+                    if (data.arm) {
+                        setArmEnabled(Boolean(data.arm.enabled));
+                        setArmBusy(Boolean(data.arm.busy));
+                        if (data.arm.err) setArmError(data.arm.err);
+
+                        // Only sync joint angles if user is not currently dragging a slider
+                        if (!isDraggingRef.current && data.arm.joints) {
+                            setJointAngles((prev) => {
+                                const next = { ...prev };
+                                Object.entries(data.arm.joints).forEach(([k, j]: [string, any]) => {
+                                    if (j && typeof j.angle === "number") {
+                                        next[k] = j.angle;
+                                    }
+                                });
+                                return next;
+                            });
+                        }
+                    }
+                }
+            } catch {
+                // Ignore silent background network polling errors
+            }
+        }, 800);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    // Arm control handlers
+    const handleArmToggle = async (on: boolean) => {
+        setArmEnabled(on);
+        setStatusLog(on ? "ARM SAFETY UNLOCKED — SERVOS READY TO MOVE" : "ARM LOCKED — SERVOS INHIBITED");
+        await sendRoverCmd({ cmd: "arm_enable", on });
     };
 
-    // Command handlers
-    const handlePatrolToggle = () => {
+    const handleArmPreset = async (presetName: string) => {
+        if (!armEnabled) {
+            setStatusLog("WARNING: Unlock arm (tick the checkbox) first to move servos");
+            return;
+        }
+        setActivePreset(presetName.toUpperCase());
+        setStatusLog(`ARM PRESET: [${presetName.toUpperCase()}] SENT TO ROVER`);
+        await sendRoverCmd({ cmd: "arm_preset", name: presetName });
+    };
+
+    const handleRelaxServos = async () => {
+        setActivePreset("RELAX");
+        setStatusLog("SERVO PWM SIGNALS RELAXED (IDLE/DE-ENERGIZED)");
+        await sendRoverCmd({ cmd: "arm_relax" });
+    };
+
+    const handleJointInput = (jointId: string, angle: number) => {
+        isDraggingRef.current = true;
+        setJointAngles((prev) => ({ ...prev, [jointId]: angle }));
+    };
+
+    const handleJointCommit = async (jointId: string, angle: number) => {
+        isDraggingRef.current = false;
+        if (!armEnabled) {
+            setStatusLog("WARNING: Unlock arm (tick the checkbox) first to move servos");
+            return;
+        }
+        setActivePreset("CUSTOM");
+        setStatusLog(`JOINT [${jointId.replace('_', ' ').toUpperCase()}] SET TO ${angle}°`);
+        await sendRoverCmd({ cmd: "joint", name: jointId, angle });
+    };
+
+    // Rover Navigation Command handlers
+    const handlePatrolToggle = async () => {
         if (emergencyStop) {
             setStatusLog("ERROR: EMERGENCY STOP ACTIVE — RESET E-STOP BEFORE RESUMING");
             return;
         }
         const nextState = !patrolActive;
         setPatrolActive(nextState);
+        await sendRoverCmd({ cmd: "patrol", on: nextState });
         const msg = nextState ? "AUTONOMOUS PATROL RESUMED — HEADING TO ACTIVE WAYPOINT" : "PATROL PAUSED — ROVER HOLDING POSITION";
         setStatusLog(msg);
     };
 
-    const handleEmergencyStop = () => {
-        setEmergencyStop((prev) => {
-            const next = !prev;
-            if (next) {
-                setPatrolActive(false);
-                setStatusLog("EMERGENCY STOP TRIGGERED: MOTOR RELAYS CUT // ARM BRAKES ENGAGED");
-            } else {
-                setStatusLog("EMERGENCY STOP DISENGAGED — SYSTEMS IN STANDBY");
-            }
-            return next;
-        });
+    const handleEmergencyStop = async () => {
+        const next = !emergencyStop;
+        setEmergencyStop(next);
+        if (next) {
+            setPatrolActive(false);
+            await sendRoverCmd({ cmd: "stop" });
+            setStatusLog("EMERGENCY STOP TRIGGERED: MOTOR RELAYS CUT // ARM BRAKES ENGAGED");
+        } else {
+            setStatusLog("EMERGENCY STOP DISENGAGED — SYSTEMS IN STANDBY");
+        }
     };
 
-    const handleAddWaypoint = () => {
+    const handleAddWaypoint = async () => {
         const next = totalWaypoints + 1;
         setTotalWaypoints(next);
-        setStatusLog(`WAYPOINT WP-0${next} ADDED AT CURRENT GPS POSITION [LAT 28.6141° N, LON 77.2094° E]`);
+        await sendRoverCmd({ cmd: "wp_add" });
+        setStatusLog(`WAYPOINT WP-0${next} ADDED AT CURRENT ROVER POSITION`);
     };
 
-    const handleClearWaypoints = () => {
+    const handleClearWaypoints = async () => {
         setTotalWaypoints(1);
         setCurrentWpIndex(1);
-        setStatusLog("WAYPOINTS CLEARED — SINGLE HOME WAYPOINT PRESERVED");
+        await sendRoverCmd({ cmd: "wp_clear" });
+        setStatusLog("WAYPOINTS CLEARED ON ROVER");
     };
 
-    const handleCalibrateCompass = () => {
-        setStatusLog("COMPASS CALIBRATION INITIATED: ROTATING 360° ON VERTICAL AXIS (MAG 0x1E)");
+    const handleCalibrateCompass = async () => {
+        await sendRoverCmd({ cmd: "cal_compass" });
+        setStatusLog("COMPASS CALIBRATION INITIATED: ROTATING 360° ON ROVER");
     };
 
     const threatColors = {
@@ -349,26 +481,18 @@ export default function HudSection() {
                             </div>
                         </div>
 
-                        {/* 2. ROBOTIC ARM TACTICAL PRESETS & 6-DOF JOINTS */}
+                        {/* 2. ROBOTIC ARM CONTROL (SYNCHRONIZED WITH RASPBERRY PI) */}
                         <div className="border border-[#2d2d2d] bg-[#0c0c0c] p-6">
-                            <div className="flex items-center justify-between mb-5 pb-3 border-b border-[#222]">
+                            <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#222]">
                                 <div className="flex items-center gap-2">
                                     <Sliders size={17} className="text-[#C6FF3D]" />
                                     <h3 className="font-bold text-white text-base font-mono tracking-wide">
-                                        ROBOTIC ARM PRESETS &amp; 6-DOF KINEMATICS
+                                        Robotic arm
                                     </h3>
                                 </div>
 
                                 <button
-                                    onClick={() => {
-                                        const next = !armEnabled;
-                                        setArmEnabled(next);
-                                        setStatusLog(
-                                            next
-                                                ? "ARM SAFETY INTERLOCK RELEASED — SERVO MOTORS ARMED"
-                                                : "ARM SAFETY INTERLOCK LOCKED — MOTORS INHIBITED"
-                                        );
-                                    }}
+                                    onClick={() => handleArmToggle(!armEnabled)}
                                     className="flex items-center gap-1.5 font-mono text-xs px-3 py-1 font-bold transition cursor-pointer"
                                     style={{
                                         background: armEnabled ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
@@ -381,95 +505,111 @@ export default function HudSection() {
                                 </button>
                             </div>
 
+                            {/* Unlock Checkbox */}
+                            <label className="flex items-center gap-3 mb-5 p-3.5 bg-[#121212] border border-[#262626] rounded cursor-pointer select-none hover:border-[#C6FF3D]/50 transition">
+                                <input
+                                    type="checkbox"
+                                    checked={armEnabled}
+                                    onChange={(e) => handleArmToggle(e.target.checked)}
+                                    className="w-4 h-4 accent-[#C6FF3D] cursor-pointer"
+                                />
+                                <span className="text-xs font-mono font-medium text-white tracking-wide">
+                                    Unlock arm (the servos only move when this is ticked)
+                                </span>
+                            </label>
+
                             {/* Preset Buttons Grid */}
                             <div className="mb-6">
-                                <span className="font-mono text-xs text-[#777] block mb-2.5">
-                                    TACTICAL QUICK PRESETS (PCA9685 I2C)
-                                </span>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                                <div className="flex flex-wrap gap-2.5">
                                     {[
-                                        {
-                                            name: "HOME POSE",
-                                            angles: { base: 90, shoulder: 90, elbow: 90, wristPitch: 90, wristRoll: 90, gripper: 40 },
-                                        },
-                                        {
-                                            name: "PERIMETER REACH",
-                                            angles: { base: 90, shoulder: 135, elbow: 115, wristPitch: 70, wristRoll: 90, gripper: 40 },
-                                        },
-                                        {
-                                            name: "360° SWEEP",
-                                            angles: { base: 160, shoulder: 95, elbow: 85, wristPitch: 90, wristRoll: 90, gripper: 40 },
-                                        },
-                                        {
-                                            name: "CLAW OPEN (40°)",
-                                            angles: { ...jointAngles, gripper: 40 },
-                                        },
-                                        {
-                                            name: "CLAW CLOSE (130°)",
-                                            angles: { ...jointAngles, gripper: 130 },
-                                        },
-                                        {
-                                            name: "STOWED TRAVEL",
-                                            angles: { base: 90, shoulder: 45, elbow: 145, wristPitch: 120, wristRoll: 90, gripper: 130 },
-                                        },
-                                    ].map((preset) => {
-                                        const isCurrent = activePreset === preset.name;
+                                        { name: "home", label: "Home" },
+                                        { name: "reach", label: "Reach" },
+                                        { name: "open", label: "Open" },
+                                        { name: "close", label: "Close" },
+                                        { name: "look", label: "Look" },
+                                    ].map((p) => {
+                                        const isCurrent = activePreset === p.name.toUpperCase();
                                         return (
                                             <button
-                                                key={preset.name}
-                                                onClick={() => applyArmPreset(preset.name, preset.angles)}
-                                                className="px-3.5 py-2.5 text-xs font-mono font-bold tracking-wider text-left border transition cursor-pointer"
-                                                style={{
-                                                    background: isCurrent ? "rgba(198,255,61,0.12)" : "#131313",
-                                                    borderColor: isCurrent ? "#C6FF3D" : "#303030",
-                                                    color: isCurrent ? "#C6FF3D" : "#ddd",
-                                                }}
+                                                key={p.name}
+                                                onClick={() => handleArmPreset(p.name)}
+                                                disabled={!armEnabled}
+                                                className={`px-4 py-2.5 text-xs font-mono font-bold tracking-wider rounded border transition cursor-pointer ${
+                                                    !armEnabled
+                                                        ? "opacity-50 border-[#2b2b2b] text-[#666] bg-[#141414] cursor-not-allowed"
+                                                        : isCurrent
+                                                        ? "bg-[#C6FF3D]/15 border-[#C6FF3D] text-[#C6FF3D]"
+                                                        : "bg-[#141414] border-[#333] text-white hover:border-[#C6FF3D] hover:text-[#C6FF3D]"
+                                                }`}
                                             >
-                                                {preset.name}
+                                                {p.label}
                                             </button>
                                         );
                                     })}
+                                    <button
+                                        onClick={handleRelaxServos}
+                                        disabled={!armEnabled}
+                                        className={`px-4 py-2.5 text-xs font-mono font-bold tracking-wider rounded border transition cursor-pointer ${
+                                            !armEnabled
+                                                ? "opacity-50 border-[#2b2b2b] text-[#666] bg-[#141414] cursor-not-allowed"
+                                                : "bg-[#141414] border-[#eab308]/50 text-[#eab308] hover:bg-[#eab308]/15"
+                                        }`}
+                                    >
+                                        Relax servos
+                                    </button>
                                 </div>
+                                {armError && (
+                                    <div className="mt-2 text-xs font-mono text-[#ef4444]">
+                                        {armError}
+                                    </div>
+                                )}
+                                {armBusy && (
+                                    <div className="mt-2 text-xs font-mono text-[#f59e0b] animate-pulse">
+                                        Moving servos...
+                                    </div>
+                                )}
                             </div>
 
-                            {/* Joint Angles Readout & Sliders */}
+                            {/* 8-DOF Joint Sliders */}
                             <div>
-                                <span className="font-mono text-xs text-[#777] block mb-3">
-                                    6-DOF JOINT TELEMETRY &amp; FINE SERVO COMMAND
-                                </span>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    {[
-                                        { id: "base", label: "BASE ROTATION (J1)", min: 10, max: 170, val: jointAngles.base },
-                                        { id: "shoulder", label: "SHOULDER PITCH (J2)", min: 30, max: 150, val: jointAngles.shoulder },
-                                        { id: "elbow", label: "ELBOW EXTENSION (J3)", min: 30, max: 150, val: jointAngles.elbow },
-                                        { id: "wristPitch", label: "WRIST PITCH (J4)", min: 10, max: 170, val: jointAngles.wristPitch },
-                                        { id: "wristRoll", label: "WRIST ROLL (J5)", min: 10, max: 170, val: jointAngles.wristRoll },
-                                        { id: "gripper", label: "END EFFECTOR CLAW (J6)", min: 40, max: 140, val: jointAngles.gripper },
-                                    ].map((j) => (
-                                        <div key={j.id} className="p-3 bg-[#111] border border-[#242424] font-mono">
-                                            <div className="flex justify-between items-center text-xs mb-1.5">
-                                                <span className="text-[#888]">{j.label}</span>
-                                                <span className="text-[#C6FF3D] font-bold">{j.val}°</span>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                                    {ARM_JOINTS.map((j) => {
+                                        const angle = jointAngles[j.id] ?? j.defaultAngle;
+                                        return (
+                                            <div key={j.id} className="p-3 bg-[#111] border border-[#242424] font-mono">
+                                                <div className="flex justify-between items-center text-xs mb-1.5">
+                                                    <span className="text-white font-semibold lowercase tracking-wide">{j.label}</span>
+                                                    <span className="text-[#C6FF3D] font-bold text-sm">{angle}</span>
+                                                </div>
+                                                <input
+                                                    type="range"
+                                                    min={j.min}
+                                                    max={j.max}
+                                                    value={angle}
+                                                    disabled={!armEnabled}
+                                                    onPointerDown={() => { isDraggingRef.current = true; }}
+                                                    onTouchStart={() => { isDraggingRef.current = true; }}
+                                                    onChange={(e) => {
+                                                        const v = parseInt(e.target.value);
+                                                        handleJointInput(j.id, v);
+                                                    }}
+                                                    onPointerUp={(e) => {
+                                                        const v = parseInt((e.target as HTMLInputElement).value);
+                                                        handleJointCommit(j.id, v);
+                                                    }}
+                                                    onTouchEnd={(e) => {
+                                                        const v = parseInt((e.target as HTMLInputElement).value);
+                                                        handleJointCommit(j.id, v);
+                                                    }}
+                                                    className="w-full accent-[#0284c7] cursor-pointer h-2 bg-[#2a2a2a] rounded"
+                                                />
+                                                <div className="flex justify-between text-[10px] text-[#555] mt-1">
+                                                    <span>{j.min}</span>
+                                                    <span>{j.max}</span>
+                                                </div>
                                             </div>
-                                            <input
-                                                type="range"
-                                                min={j.min}
-                                                max={j.max}
-                                                value={j.val}
-                                                disabled={!armEnabled}
-                                                onChange={(e) => {
-                                                    const v = parseInt(e.target.value);
-                                                    setJointAngles((prev) => ({ ...prev, [j.id]: v }));
-                                                    setActivePreset("CUSTOM");
-                                                }}
-                                                className="w-full accent-[#C6FF3D] cursor-pointer"
-                                            />
-                                            <div className="flex justify-between text-[10px] text-[#555] mt-1">
-                                                <span>{j.min}°</span>
-                                                <span>{j.max}°</span>
-                                            </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         </div>

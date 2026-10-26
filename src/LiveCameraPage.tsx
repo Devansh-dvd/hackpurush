@@ -169,6 +169,13 @@ export default function LiveCameraPage() {
                             BACK TO DASHBOARD
                         </Link>
 
+                        <Link
+                            to="/threats"
+                            className="flex items-center gap-2 px-3 py-2 text-xs font-mono font-bold text-[#C6FF3D] border border-[#C6FF3D]/40 bg-[#C6FF3D]/10 hover:border-[#C6FF3D] transition"
+                        >
+                            PAST THREAT EVENTS
+                        </Link>
+
                         <div className="flex items-center gap-2">
                             <span className="w-2.5 h-2.5 rounded-full bg-[#f59e0b]" />
                             <span className="font-mono font-bold text-sm tracking-wide text-white">
@@ -257,6 +264,13 @@ export default function LiveCameraPage() {
                     >
                         <ArrowLeft size={14} />
                         BACK TO DASHBOARD
+                    </Link>
+
+                    <Link
+                        to="/threats"
+                        className="hidden sm:flex items-center gap-2 px-3 py-2 text-xs font-mono font-bold text-white border border-[#333] hover:border-[#C6FF3D] hover:text-[#C6FF3D] transition cursor-pointer"
+                    >
+                        PAST THREAT EVENTS
                     </Link>
 
                     <div className="flex items-center gap-2">

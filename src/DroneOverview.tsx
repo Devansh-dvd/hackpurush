@@ -1,14 +1,16 @@
 import { useEffect, useRef, useCallback, useState } from "react";
-import { Move3d, RotateCw, RotateCcw } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Move3d, RotateCw, RotateCcw, Database, RefreshCw } from "lucide-react";
 import type { TelemetryData } from "./types/api";
 import RoverArmViewer from "./RoverArmViewer";
 
 
 
-function SoundWaveVisualizer({ tick }: { tick: number }) {
+function SoundWaveVisualizer({ tick, liveSnd }: { tick: number; liveSnd?: number }) {
     const barCount = 18;
-    const soundAdc = Math.min(4095, Math.max(120, Math.round(
-        920 + Math.sin(tick * 0.12) * 380 + Math.cos(tick * 0.07) * 220 + ((tick * 13) % 210)
+    const baseAdc = (liveSnd !== undefined && liveSnd !== null && liveSnd >= 0) ? liveSnd : 820;
+    const soundAdc = Math.min(4095, Math.max(0, Math.round(
+        baseAdc + (baseAdc > 0 ? (Math.sin(tick * 0.12) * 20 + Math.cos(tick * 0.07) * 15) : 0)
     )));
     const dbValue = (-48 + (soundAdc / 4095) * 42).toFixed(1);
 
@@ -109,7 +111,7 @@ function SoundWaveVisualizer({ tick }: { tick: number }) {
     );
 }
 
-function CompassRoseGraphic({ tick }: { tick: number }) {
+function CompassRoseGraphic({ tick, liveSats }: { tick: number; liveSats?: number }) {
     const heading = (tick * 0.35 + 42) % 360;
     const hdgInt = Math.round(heading);
 
@@ -238,15 +240,16 @@ function CompassRoseGraphic({ tick }: { tick: number }) {
 
             {/* Footer */}
             <div className="flex items-center justify-between pt-1 border-t border-[#1a1a1a] text-[9px] text-[#666]" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                <span>GPS FIX: 3D</span>
-                <span className="text-[#888]">SATS: 9 LOCK</span>
+                <span>GPS FIX: {liveSats && liveSats > 0 ? "3D LOCK" : "STANDBY"}</span>
+                <span className="text-[#888]">SATS: {liveSats !== undefined ? liveSats : 9} LOCK</span>
             </div>
         </div>
     );
 }
 
-function FlameSensorMatrix({ tick }: { tick: number }) {
-    const flameAdc = Math.round(3820 - Math.sin(tick * 0.08) * 75 - Math.cos(tick * 0.14) * 45);
+function FlameSensorMatrix({ tick, liveFlame }: { tick: number; liveFlame?: number }) {
+    const baseFlame = (liveFlame !== undefined && liveFlame !== null) ? liveFlame : 3750;
+    const flameAdc = Math.round(baseFlame - Math.sin(tick * 0.08) * 15 - Math.cos(tick * 0.14) * 10);
     const isThreat = flameAdc < 1500;
 
     const gridSize = 6;
@@ -725,12 +728,176 @@ function TelemetryCell({
     );
 }
 
+interface ThreatLogRecord {
+    threat_number: number;
+    date_time: string;
+    threat_level: "WATCH" | "ALERT" | "FIRE" | "CRITICAL";
+    threat_type: string;
+    threat_score: number;
+    trigger_sensors: string[];
+    obstacle_dist_cm?: number;
+    acoustic_snd_adc?: number;
+    metal_detected?: boolean;
+    flame_ir_adc?: number;
+    ambient_temp_c?: number;
+    humidity_pct?: number;
+    lora_rssi_dbm?: number;
+    patrol_mode?: string;
+    threat_summary?: string;
+}
+
+interface ThreatStats {
+    total_threats: number;
+    latest_threat_number: number;
+    by_level: Record<string, number>;
+}
+
 export default function DroneOverviewSection({ liveTelemetry: _liveTelemetry }: { liveTelemetry?: TelemetryData }) {
     const [tick, setTick] = useState(0);
+    const [threats, setThreats] = useState<ThreatLogRecord[]>([]);
+    const [stats, setStats] = useState<ThreatStats>({ total_threats: 0, latest_threat_number: 0, by_level: {} });
+    const [pgConnected, setPgConnected] = useState<boolean>(true);
+    const [roverOnline, setRoverOnline] = useState<boolean>(false);
+    const [roverLastPing, setRoverLastPing] = useState<string>("");
+
+    // Rover Telemetry State — dynamically populated from Raspberry Pi http://172.20.10.3:5000/api/state
+    const [currentSensors, setCurrentSensors] = useState({
+        dist: -1,         // Obstacle distance in cm (-1 = clear / >400cm)
+        snd: 0,           // Acoustic sound in ADC
+        metal: false,     // Metal detection boolean
+        flame: 3200,      // Flame IR in ADC
+        sats: 0,          // GPS satellites count
+        temp: 22.0,       // Ambient temperature in °C
+        hum: 70.0,        // Humidity percentage
+        rssi: -84.0,      // LoRa RSSI dBm (persisted default if not present)
+        threatLevel: "CLEAR", // Fusion threat level
+        patrolMode: "STOP"    // Rover mode / patrol state
+    });
+
     useEffect(() => {
         const id = setInterval(() => setTick(t => t + 1), 60);
         return () => clearInterval(id);
     }, []);
+
+    // 1. Live Telemetry Polling from Raspberry Pi (http://172.20.10.3:5000/api/state via /rover-api/state)
+    const fetchRoverTelemetry = useCallback(async () => {
+        try {
+            let res: Response;
+            try {
+                res = await fetch("/rover-api/state");
+            } catch {
+                res = await fetch("http://172.20.10.3:5000/api/state");
+            }
+
+            if (res.ok) {
+                const data = await res.json();
+                setRoverOnline(true);
+                setRoverLastPing(new Date().toLocaleTimeString());
+
+                const s = data.sensors || {};
+                const g = data.gps || {};
+                const l = data.lora || {};
+
+                setCurrentSensors(prev => {
+                    const next = { ...prev };
+
+                    // 1. Obstacle distance (cm) - if received, update; else leave previous
+                    if (s.dist !== undefined && s.dist !== null) {
+                        next.dist = s.dist;
+                    }
+
+                    // 2. Acoustic sound (ADC)
+                    if (s.snd !== undefined && s.snd !== null) {
+                        next.snd = s.snd;
+                    }
+
+                    // 3. Metal detection
+                    if (s.metal !== undefined && s.metal !== null) {
+                        next.metal = Boolean(s.metal) || (Array.isArray(data.mods) && data.mods.includes("metal"));
+                    } else if (Array.isArray(data.mods) && data.mods.includes("metal")) {
+                        next.metal = true;
+                    }
+
+                    // 4. Flame IR (ADC)
+                    if (s.flame !== undefined && s.flame !== null) {
+                        next.flame = s.flame;
+                    }
+
+                    // 5. GPS satellites
+                    if (g.sats !== undefined && g.sats !== null) {
+                        next.sats = g.sats;
+                    }
+
+                    // 6. Ambient temperature (°C)
+                    if (s.temp !== undefined && s.temp !== null) {
+                        next.temp = s.temp;
+                    }
+
+                    // 7. Humidity (%)
+                    if (s.hum !== undefined && s.hum !== null) {
+                        next.hum = s.hum;
+                    }
+
+                    // 8. LoRa RSSI (dBm) - leave rest if not present
+                    if (l.rssi !== undefined && l.rssi !== null) {
+                        next.rssi = l.rssi;
+                    }
+
+                    // 9. Threat Level
+                    if (data.level !== undefined && data.level !== null) {
+                        next.threatLevel = String(data.level).toUpperCase();
+                    }
+
+                    // 10. Patrol Mode
+                    if (data.mode !== undefined && data.mode !== null) {
+                        next.patrolMode = data.patrol ? "PATROL" : String(data.mode);
+                    } else if (data.nav) {
+                        next.patrolMode = String(data.nav).slice(0, 10);
+                    }
+
+                    return next;
+                });
+            } else {
+                setRoverOnline(false);
+            }
+        } catch {
+            setRoverOnline(false);
+        }
+    }, []);
+
+    // 2. Polling PostgreSQL threats and stats (audit table only — does NOT overwrite live telemetry)
+    const fetchThreatData = useCallback(async () => {
+        try {
+            const [listRes, statsRes] = await Promise.all([
+                fetch("/threat-api/api/threats?limit=15"),
+                fetch("/threat-api/api/threats/stats")
+            ]);
+
+            if (listRes.ok) {
+                const data = await listRes.json();
+                setThreats(data);
+                setPgConnected(true);
+            }
+            if (statsRes.ok) {
+                const s = await statsRes.json();
+                setStats(s);
+            }
+        } catch {
+            setPgConnected(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchRoverTelemetry();
+        const roverPoll = setInterval(fetchRoverTelemetry, 750);
+        return () => clearInterval(roverPoll);
+    }, [fetchRoverTelemetry]);
+
+    useEffect(() => {
+        fetchThreatData();
+        const pollId = setInterval(fetchThreatData, 3000);
+        return () => clearInterval(pollId);
+    }, [fetchThreatData]);
 
     return (
         <section style={{ background: "#0a0a0a", fontFamily: "'Space Grotesk', sans-serif" }} className="relative overflow-hidden">
@@ -748,12 +915,16 @@ export default function DroneOverviewSection({ liveTelemetry: _liveTelemetry }: 
 
                     <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#111] border border-[#2a2a2a] text-[#888]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e]" />
-                            <span>SENSOR NODE: <strong className="text-white">ONLINE</strong></span>
+                            <span className={`w-1.5 h-1.5 rounded-full ${roverOnline ? "bg-[#22c55e] animate-pulse" : "bg-[#ef4444]"}`} />
+                            <span>ROVER PI (172.20.10.3:5000): <strong className={roverOnline ? "text-white" : "text-[#ef4444]"}>{roverOnline ? (roverLastPing ? `LIVE (${roverLastPing})` : "ONLINE") : "OFFLINE / RETRYING"}</strong></span>
+                        </div>
+                        <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#111] border border-[#2a2a2a] text-[#888]">
+                            <span className={`w-1.5 h-1.5 rounded-full ${pgConnected ? "bg-[#22c55e] animate-pulse" : "bg-[#ef4444]"}`} />
+                            <span>POSTGRESQL 18: <strong className={pgConnected ? "text-white" : "text-[#ef4444]"}>{pgConnected ? "ONLINE" : "OFFLINE"}</strong></span>
                         </div>
                         <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#111] border border-[#2a2a2a] text-[#888]">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#3b82f6]" />
-                            <span>DRIVE NODE: <strong className="text-white">STANDBY</strong></span>
+                            <span>DRIVE NODE: <strong className="text-white">{currentSensors.patrolMode}</strong></span>
                         </div>
                         <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#111] border border-[#2a2a2a] text-[#888]">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#C6FF3D]" />
@@ -768,13 +939,13 @@ export default function DroneOverviewSection({ liveTelemetry: _liveTelemetry }: 
                         <div className="flex-1 p-4" style={{ background: "#0d0d0d" }}>
                             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 h-full" style={{ gridTemplateRows: "auto 1fr auto" }}>
                                 <div className="flex flex-col justify-between p-3" style={{ border: "1px solid #3a3a3a", borderRadius: 6, background: "#0a0a0a", minHeight: 168 }}>
-                                    <SoundWaveVisualizer tick={tick} />
+                                    <SoundWaveVisualizer tick={tick} liveSnd={currentSensors.snd} />
                                 </div>
                                 <div className="flex flex-col justify-between p-3" style={{ border: "1px solid #3a3a3a", borderRadius: 6, background: "#0a0a0a", minHeight: 168 }}>
-                                    <CompassRoseGraphic tick={tick} />
+                                    <CompassRoseGraphic tick={tick} liveSats={currentSensors.sats} />
                                 </div>
                                 <div className="hidden md:flex flex-col justify-between p-3" style={{ border: "1px solid #3a3a3a", borderRadius: 6, background: "#0a0a0a", minHeight: 168 }}>
-                                    <FlameSensorMatrix tick={tick} />
+                                    <FlameSensorMatrix tick={tick} liveFlame={currentSensors.flame} />
                                 </div>
                                 <div className="col-span-2 md:col-span-3 flex items-center justify-center p-3"
                                     style={{ border: "1px solid #3a3a3a", borderRadius: 6, background: "#0a0a0a", position: "relative", overflow: "hidden" }}>
@@ -782,27 +953,226 @@ export default function DroneOverviewSection({ liveTelemetry: _liveTelemetry }: 
                                         <RoverArmViewer height={420} />
                                     </div>
                                 </div>
+                                
                                 {/* ABSR ROVER TELEMETRY CELLS (10 BOXES, 5 COLUMNS) */}
                                 <div className="col-span-2 md:col-span-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
-                                    <TelemetryCell label="OBSTACLE DIST" value="--" unit="cm" />
-                                    <TelemetryCell label="ACOUSTIC SND" value="--" unit="ADC" />
-                                    <TelemetryCell label="METAL SENSOR" value="--" unit="" />
-                                    <TelemetryCell label="FLAME IR" value="--" unit="ADC" />
-                                    <TelemetryCell label="GPS SATELLITES" value="--" unit="LOCK" />
+                                    {/* 1. OBSTACLE DIST */}
+                                    <TelemetryCell 
+                                        label="OBSTACLE DIST" 
+                                        value={
+                                            currentSensors.dist === -1 
+                                                ? "> 400" 
+                                                : currentSensors.dist >= 0 
+                                                ? `${currentSensors.dist}` 
+                                                : "—"
+                                        } 
+                                        unit={currentSensors.dist >= 0 ? "cm" : ""} 
+                                        warn={currentSensors.dist >= 0 && currentSensors.dist < 40}
+                                        color={currentSensors.dist >= 0 && currentSensors.dist < 40 ? "#ef4444" : "#C6FF3D"}
+                                    />
 
-                                    <TelemetryCell label="AMBIENT TEMP" value="--" unit="°C" />
-                                    <TelemetryCell label="HUMIDITY" value="--" unit="%" />
-                                    <TelemetryCell label="LORA RSSI" value="--" unit="dBm" />
-                                    <TelemetryCell label="THREAT LEVEL" value="--" unit="FUSION" />
-                                    <TelemetryCell label="PATROL MODE" value="--" unit="WP" />
+                                    {/* 2. ACOUSTIC SND */}
+                                    <TelemetryCell 
+                                        label="ACOUSTIC SND" 
+                                        value={`${currentSensors.snd}`} 
+                                        unit="ADC" 
+                                        warn={currentSensors.snd > 2500}
+                                        color={currentSensors.snd > 2500 ? "#ef4444" : "#ffffff"}
+                                    />
+
+                                    {/* 3. METAL SENSOR */}
+                                    <TelemetryCell 
+                                        label="METAL SENSOR" 
+                                        value={currentSensors.metal ? "DETECTED" : "CLEAR"} 
+                                        unit="" 
+                                        warn={currentSensors.metal}
+                                        color={currentSensors.metal ? "#f97316" : "#22c55e"}
+                                    />
+
+                                    {/* 4. FLAME IR */}
+                                    <TelemetryCell 
+                                        label="FLAME IR" 
+                                        value={`${currentSensors.flame}`} 
+                                        unit="ADC" 
+                                        warn={currentSensors.flame < 1500}
+                                        color={currentSensors.flame < 1500 ? "#ef4444" : "#C6FF3D"}
+                                    />
+
+                                    {/* 5. GPS SATELLITES */}
+                                    <TelemetryCell 
+                                        label="GPS SATELLITES" 
+                                        value={`${currentSensors.sats}`} 
+                                        unit={currentSensors.sats > 0 ? "LOCK" : "SEARCH"} 
+                                        warn={currentSensors.sats < 4}
+                                        color={currentSensors.sats >= 6 ? "#22c55e" : currentSensors.sats > 0 ? "#eab308" : "#888888"}
+                                    />
+
+                                    {/* 6. AMBIENT TEMP */}
+                                    <TelemetryCell 
+                                        label="AMBIENT TEMP" 
+                                        value={`${currentSensors.temp}`} 
+                                        unit="°C" 
+                                        warn={currentSensors.temp > 55 || currentSensors.temp < -15}
+                                        color={currentSensors.temp > 55 ? "#ef4444" : "#ffffff"}
+                                    />
+
+                                    {/* 7. HUMIDITY */}
+                                    <TelemetryCell 
+                                        label="HUMIDITY" 
+                                        value={`${currentSensors.hum}`} 
+                                        unit="%" 
+                                        warn={currentSensors.hum > 95}
+                                        color="#ffffff"
+                                    />
+
+                                    {/* 8. LORA RSSI */}
+                                    <TelemetryCell 
+                                        label="LORA RSSI" 
+                                        value={`${currentSensors.rssi}`} 
+                                        unit="dBm" 
+                                        warn={currentSensors.rssi < -125}
+                                        color={currentSensors.rssi > -105 ? "#22c55e" : "#eab308"}
+                                    />
+
+                                    {/* 9. THREAT LEVEL */}
+                                    <TelemetryCell 
+                                        label="THREAT LEVEL" 
+                                        value={currentSensors.threatLevel} 
+                                        unit="FUSION" 
+                                        warn={currentSensors.threatLevel !== "CLEAR"}
+                                        color={
+                                            currentSensors.threatLevel === "FIRE" 
+                                                ? "#ef4444" 
+                                                : currentSensors.threatLevel === "ALERT" 
+                                                ? "#f97316" 
+                                                : currentSensors.threatLevel === "WATCH" 
+                                                ? "#eab308" 
+                                                : "#22c55e"
+                                        }
+                                    />
+
+                                    {/* 10. PATROL MODE */}
+                                    <TelemetryCell 
+                                        label="PATROL MODE" 
+                                        value={currentSensors.patrolMode} 
+                                        unit="MODE" 
+                                        color="#38bdf8"
+                                    />
                                 </div>
                                 
                             </div>
                         </div>
-
-                        
                     </div>
                 </div>
+
+                {/* ─── POSTGRESQL 18 THREAT LOGS AUDIT TABLE ─────────────────────────────────── */}
+                <div className="mt-8 p-5 bg-[#0d0d0d] border border-[#262626] rounded-lg">
+                    <div className="flex items-center justify-between flex-wrap gap-4 pb-4 border-b border-[#222]">
+                        <div className="flex items-center gap-3">
+                            <Database className="w-5 h-5 text-[#C6FF3D]" />
+                            <h3 className="text-base font-bold text-white tracking-wider" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                                POSTGRESQL THREAT AUDIT LOGS <span className="text-xs font-mono text-[#888] font-normal">[table: threat_logs]</span>
+                            </h3>
+                            <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-[#141414] border border-[#333] text-[#C6FF3D]">
+                                TOTAL LOGGED: {stats.total_threats}
+                            </span>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <Link
+                                to="/threats"
+                                className="px-3 py-1 text-xs font-mono rounded bg-[#1f1f1f] border border-[#333] text-[#C6FF3D] hover:border-[#C6FF3D] hover:bg-[#C6FF3D]/10 transition flex items-center gap-1.5"
+                            >
+                                VIEW FULL ARCHIVE →
+                            </Link>
+                            <button
+                                onClick={fetchThreatData}
+                                className="px-2.5 py-1 text-xs font-mono rounded bg-[#1f1f1f] border border-[#333] text-[#ccc] hover:text-white transition flex items-center gap-1"
+                                title="Refresh from PostgreSQL"
+                            >
+                                <RefreshCw className="w-3.5 h-3.5" /> Refresh
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Threat Records Table */}
+                    <div className="mt-4 overflow-x-auto">
+                        <table className="w-full text-left text-xs font-mono border-collapse">
+                            <thead>
+                                <tr className="border-b border-[#222] text-[#777]">
+                                    <th className="py-2.5 px-3">THREAT #</th>
+                                    <th className="py-2.5 px-3">DATE & TIME</th>
+                                    <th className="py-2.5 px-3">LEVEL</th>
+                                    <th className="py-2.5 px-3">TYPE</th>
+                                    <th className="py-2.5 px-3">TRIGGER SENSORS</th>
+                                    <th className="py-2.5 px-3">SCORE</th>
+                                    <th className="py-2.5 px-3">INCIDENT SUMMARY</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {threats.length === 0 ? (
+                                    <tr>
+                                        <td colSpan={7} className="py-6 text-center text-[#555]">
+                                            No threat events recorded yet. Safe telemetry is actively discarded.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    threats.map((t) => {
+                                        const isFire = t.threat_level === "FIRE";
+                                        const isCrit = t.threat_level === "CRITICAL";
+                                        const isAlert = t.threat_level === "ALERT";
+                                        const levelColor = isFire
+                                            ? "text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/30"
+                                            : isCrit
+                                            ? "text-[#e8543f] bg-[#e8543f]/10 border-[#e8543f]/30"
+                                            : isAlert
+                                            ? "text-[#f97316] bg-[#f97316]/10 border-[#f97316]/30"
+                                            : "text-[#eab308] bg-[#eab308]/10 border-[#eab308]/30";
+
+                                        return (
+                                            <tr key={t.threat_number} className="border-b border-[#1a1a1a] hover:bg-[#141414] transition">
+                                                <td className="py-2 px-3 font-bold text-[#C6FF3D]">
+                                                    #{t.threat_number}
+                                                </td>
+                                                <td className="py-2 px-3 text-[#aaa]">
+                                                    {t.date_time ? new Date(t.date_time).toLocaleTimeString() : "--"}
+                                                    <span className="block text-[10px] text-[#555]">
+                                                        {t.date_time ? new Date(t.date_time).toLocaleDateString() : ""}
+                                                    </span>
+                                                </td>
+                                                <td className="py-2 px-3">
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${levelColor}`}>
+                                                        {t.threat_level}
+                                                    </span>
+                                                </td>
+                                                <td className="py-2 px-3 font-semibold text-white">
+                                                    {t.threat_type}
+                                                </td>
+                                                <td className="py-2 px-3">
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {t.trigger_sensors?.map((s, idx) => (
+                                                            <span key={idx} className="px-1.5 py-0.5 rounded text-[9px] bg-[#1a1a1a] text-[#bbb] border border-[#2e2e2e]">
+                                                                {s}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </td>
+                                                <td className="py-2 px-3 text-[#C6FF3D]">
+                                                    {t.threat_score ? (t.threat_score * 100).toFixed(0) + "%" : "--"}
+                                                </td>
+                                                <td className="py-2 px-3 text-[#888] max-w-xs truncate" title={t.threat_summary}>
+                                                    {t.threat_summary || "--"}
+                                                </td>
+                                            </tr>
+                                        );
+                                    })
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
             </div>
         </section>
     );

@@ -42,6 +42,13 @@ export default function CyberBrutalSection({ onViewTwin, onScrollToDrone, onScro
                 <div className="hidden md:flex items-center gap-8 text-sm" style={{ fontFamily: "'JetBrains Mono', monospace", color: "#d0d0d0" }}>
                     <span className="hover:text-white cursor-pointer transition" onClick={onScrollToDrone}>ROVER 3D &amp; SENSORS</span>
                     <span className="hover:text-[#C6FF3D] cursor-pointer transition font-semibold" onClick={onScrollToHud}>MISSION DASHBOARD</span>
+                    <Link
+                        to="/threats"
+                        className="hover:text-[#C6FF3D] text-[#e8e8e8] hover:text-white transition font-semibold flex items-center gap-1.5"
+                    >
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#C6FF3D]" />
+                        PAST THREAT EVENTS
+                    </Link>
                     {isOnline && (
                         <Link to="/camera" className="hover:text-[#C6FF3D] text-[#C6FF3D] transition font-semibold flex items-center gap-1.5">
                             <span className="w-2 h-2 rounded-full bg-[#C6FF3D] animate-ping" />
@@ -125,6 +132,24 @@ export default function CyberBrutalSection({ onViewTwin, onScrollToDrone, onScro
                         >
                             3D ROVER TWIN
                         </button>
+
+                        <Link
+                            to="/threats"
+                            className="
+                                flex items-center gap-2
+                                px-6 py-4
+                                text-base font-bold
+                                text-white
+                                border border-[#444]
+                                hover:border-[#C6FF3D]
+                                hover:text-[#C6FF3D]
+                                hover:bg-[#C6FF3D]/10
+                                transition
+                            "
+                        >
+                            PAST THREATS
+                            <ArrowUpRight size={17} />
+                        </Link>
 
                         {isOnline && (
                             <Link

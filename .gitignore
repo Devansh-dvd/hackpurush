@@ -34,3 +34,9 @@ npm-debug.log*
 # Pre-shared AES-128 key for LoRa authenticated encryption.
 # Generate with: python scripts/gen_key.py
 firmware/secrets.h
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
