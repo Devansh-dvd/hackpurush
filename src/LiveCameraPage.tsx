@@ -367,7 +367,7 @@ export default function LiveCameraPage() {
                     <span className="w-1.5 h-1.5 rounded-full bg-[#C6FF3D]" />
                     <span>SKOPEO ABSR TACTICAL SURVEILLANCE • SECTOR-04 BRAVO</span>
                 </div>
-                <span>TEAM RAMBHAROSE</span>
+                <span>TEAM CLUTCH HEROES</span>
             </footer>
         </div>
     );

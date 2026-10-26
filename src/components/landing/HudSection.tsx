@@ -574,7 +574,7 @@ export default function HudSection() {
                     <span className="w-2 h-2 rounded-full bg-[#C6FF3D]" />
                     <span>SKOPEO ABSR ROVER • SECTOR-04 BRAVO DEFENSE GRID</span>
                 </div>
-                <span>TEAM RAMBHAROSE • AUTONOMOUS SENTRY ARCHITECTURE</span>
+                <span>TEAM CLUTCH HEROES • AUTONOMOUS SENTRY ARCHITECTURE</span>
             </div>
         </section>
     );
