@@ -16,7 +16,6 @@ import {
 import TacticalWorldMap from "./components/camera/TacticalWorldMap";
 
 export default function LiveCameraPage() {
-    const [currentTime, setCurrentTime] = useState<string>("");
     const [spectrumMode, setSpectrumMode] = useState<"STANDARD" | "NIGHT" | "THERMAL">("STANDARD");
     const [zoomLevel, setZoomLevel] = useState<number>(1);
     const [gpsLoading, setGpsLoading] = useState(false);
@@ -84,17 +83,6 @@ export default function LiveCameraPage() {
         fetchCurrentLocation();
     }, []);
 
-    // Clock
-    useEffect(() => {
-        const updateTime = () => {
-            const now = new Date();
-            setCurrentTime(now.toTimeString().split(" ")[0] + "." + Math.floor(now.getMilliseconds() / 100));
-        };
-        updateTime();
-        const id = setInterval(updateTime, 100);
-        return () => clearInterval(id);
-    }, []);
-
     return (
         <div
             style={{
@@ -127,17 +115,6 @@ export default function LiveCameraPage() {
                         <span className="hidden sm:inline text-[10px] font-mono px-2 py-0.5 bg-[#161616] border border-[#333] text-[#C6FF3D]">
                             SECTOR-04 BRAVO
                         </span>
-                    </div>
-                </div>
-
-                <div className="flex items-center gap-4 font-mono text-xs">
-                    <div className="hidden sm:flex items-center gap-2 text-[#888]">
-                        <span>MISSION TIME:</span>
-                        <span className="text-white font-bold">{currentTime}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 px-3 py-1 border border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e] font-bold">
-                        <span className="w-2 h-2 rounded-full bg-[#22c55e] animate-ping" />
-                        SYSTEMS NOMINAL
                     </div>
                 </div>
             </header>
