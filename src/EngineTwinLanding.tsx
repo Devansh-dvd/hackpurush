@@ -63,7 +63,7 @@ export default function EngineTwinLanding({ autoScrollToDashboard = false }: { a
             </div>
 
             <div ref={hudRef}>
-                <HudSection engineData={engineData} />
+                <HudSection />
             </div>
         </div>
     );

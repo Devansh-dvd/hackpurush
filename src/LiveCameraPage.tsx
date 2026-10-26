@@ -3,15 +3,11 @@ import { Link } from "react-router-dom";
 import {
     ArrowLeft,
     Camera,
-    MapPin,
     Compass,
-    Radio,
     Shield,
-    Maximize2,
     Crosshair,
     Navigation,
-    Activity,
-    Wifi
+    Activity
 } from "lucide-react";
 import TacticalWorldMap from "./components/camera/TacticalWorldMap";
 
@@ -20,6 +16,16 @@ export default function LiveCameraPage() {
     const [zoomLevel, setZoomLevel] = useState<number>(1);
     const [gpsLoading, setGpsLoading] = useState(false);
     const [gpsMessage, setGpsMessage] = useState<string>("DEFAULT PERIMETER COORDINATES");
+    
+    // Live stream state from Raspberry Pi
+    const [streamIp, setStreamIp] = useState("172.20.10.3:5000");
+    const [streamOnline, setStreamOnline] = useState(true);
+    const [streamFps, setStreamFps] = useState<number | string>(6.1);
+    const [aiDetections, setAiDetections] = useState<Array<[string, number]>>([]);
+    const [threatLevel, setThreatLevel] = useState<string>("CLEAR");
+    const [threatScore, setThreatScore] = useState<number>(0.048);
+    const [motionLevel, setMotionLevel] = useState<number>(0.15);
+    const [loraSignal, setLoraSignal] = useState<number | null>(null);
 
     // Rover GPS position & navigation state (with live device location support)
     const [roverData, setRoverData] = useState({
@@ -83,6 +89,51 @@ export default function LiveCameraPage() {
         fetchCurrentLocation();
     }, []);
 
+    // Live Rover State polling from Raspberry Pi
+    useEffect(() => {
+        const interval = setInterval(async () => {
+            try {
+                const res = await fetch("/rover-api/state");
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.vision) {
+                        setStreamFps(data.vision.fps || 6.1);
+                        setAiDetections(data.vision.dets || []);
+                        setMotionLevel(data.vision.motion ?? 0.15);
+                    }
+                    if (data.level) setThreatLevel(data.level);
+                    if (data.score !== undefined) setThreatScore(data.score);
+                    if (data.lora?.rssi !== undefined) setLoraSignal(data.lora.rssi);
+                    if (data.gps?.lat && data.gps?.lon) {
+                        setRoverData((prev) => ({
+                            ...prev,
+                            lat: data.gps.lat,
+                            lon: data.gps.lon,
+                            sats: data.gps.sats || prev.sats,
+                        }));
+                    }
+                    setStreamOnline(true);
+                }
+            } catch (err) {
+                // If local proxy fails, keep quiet and retry next tick
+            }
+        }, 1200);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    // CSS filter based on selected spectrum
+    const getSpectrumFilter = () => {
+        switch (spectrumMode) {
+            case "NIGHT":
+                return "brightness(1.15) contrast(1.4) hue-rotate(65deg) saturate(1.8)";
+            case "THERMAL":
+                return "invert(0.85) hue-rotate(180deg) saturate(2.4) contrast(1.3)";
+            default:
+                return "none";
+        }
+    };
+
     return (
         <div
             style={{
@@ -117,13 +168,24 @@ export default function LiveCameraPage() {
                         </span>
                     </div>
                 </div>
+
+                {/* Right side connection badge */}
+                <div className="flex items-center gap-3 font-mono text-xs">
+                    <div className="flex items-center gap-2 px-3 py-1 bg-[#111] border border-[#2a2a2a]">
+                        <span className={`w-2 h-2 rounded-full ${streamOnline ? "bg-[#22c55e] animate-ping" : "bg-[#ef4444]"}`} />
+                        <span className="text-[11px] font-bold text-white">
+                            {streamOnline ? "PI LINK ACTIVE" : "PI DISCONNECTED"}
+                        </span>
+                        <span className="text-[10px] text-[#666]">[{streamIp}]</span>
+                    </div>
+                </div>
             </header>
 
             {/* Main Content Layout */}
             <main className="flex-1 p-6 max-w-[1700px] w-full mx-auto flex flex-col gap-6">
                 {/* TOP ROW: CAMERA (LEFT) + TACTICAL MAP (RIGHT) */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    {/* LEFT: BLANK CAMERA CONTAINER (READY FOR RASPBERRY PI WEBCAM) */}
+                    {/* LEFT: LIVE RASPBERRY PI WEBCAM STREAM */}
                     <div className="flex flex-col border border-[#2a2a2a] bg-[#090909]">
                         {/* Header bar */}
                         <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#222] bg-[#0d0d0d] font-mono text-xs">
@@ -133,46 +195,151 @@ export default function LiveCameraPage() {
                                 <span className="text-[#666]">•</span>
                                 <span className="text-[#888]">RASPBERRY PI CSI/USB WEBCAM</span>
                             </div>
-                            <span className="text-[11px] px-2 py-0.5 border border-[#333] bg-[#141414] text-[#888]">
-                                STANDBY // READY FOR :5000/video
-                            </span>
+                            <div className="flex items-center gap-2">
+                                <span className={`text-[11px] px-2 py-0.5 border font-bold flex items-center gap-1.5 ${
+                                    streamOnline 
+                                        ? "border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]" 
+                                        : "border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]"
+                                }`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${streamOnline ? "bg-[#22c55e] animate-pulse" : "bg-[#ef4444]"}`} />
+                                    {streamOnline ? `LIVE • ${streamFps} FPS` : "STREAM OFFLINE"}
+                                </span>
+                            </div>
                         </div>
 
-                        {/* Blank Video Slate */}
+                        {/* Live Video Slate */}
                         <div
-                            className="relative flex-1 min-h-[420px] bg-[#050505] flex flex-col items-center justify-center p-8 overflow-hidden select-none"
+                            className="relative flex-1 min-h-[440px] bg-[#040404] flex items-center justify-center overflow-hidden select-none"
                             style={{
                                 backgroundImage:
                                     "linear-gradient(to right, #111 1px, transparent 1px), linear-gradient(to bottom, #111 1px, transparent 1px)",
                                 backgroundSize: "32px 32px",
                             }}
                         >
-                            {/* Minimal corner brackets */}
-                            <div className="absolute top-4 left-4 w-5 h-5 border-t-2 border-l-2 border-[#333]" />
-                            <div className="absolute top-4 right-4 w-5 h-5 border-t-2 border-r-2 border-[#333]" />
-                            <div className="absolute bottom-4 left-4 w-5 h-5 border-b-2 border-l-2 border-[#333]" />
-                            <div className="absolute bottom-4 right-4 w-5 h-5 border-b-2 border-r-2 border-[#333]" />
+                            {/* Live Video Stream from Raspberry Pi */}
+                            {streamOnline ? (
+                                <img
+                                    src="/rover-video"
+                                    alt="Raspberry Pi Live Stream"
+                                    className="w-full h-full object-cover transition-transform duration-300"
+                                    style={{
+                                        filter: getSpectrumFilter(),
+                                        transform: `scale(${zoomLevel})`,
+                                    }}
+                                    onError={() => {
+                                        // Try direct stream URL fallback
+                                        const imgEl = document.getElementById("pi-stream-img") as HTMLImageElement;
+                                        if (imgEl && imgEl.src.includes("/rover-video")) {
+                                            imgEl.src = `http://${streamIp}/video`;
+                                        } else {
+                                            setStreamOnline(false);
+                                        }
+                                    }}
+                                    id="pi-stream-img"
+                                />
+                            ) : (
+                                /* Tactical Standby / Reconnect Screen */
+                                <div className="flex flex-col items-center justify-center text-center p-8 max-w-md z-10">
+                                    <div className="w-14 h-14 rounded-full border border-[#ef4444]/30 bg-[#160b0b] flex items-center justify-center mb-3">
+                                        <Camera size={22} className="text-[#ef4444]" />
+                                    </div>
+                                    <div className="font-mono text-xs font-bold text-[#ef4444] tracking-wider mb-1">
+                                        OPTICAL CARRIER DISCONNECTED
+                                    </div>
+                                    <div className="font-mono text-[11px] text-[#888] mb-4">
+                                        Unable to establish MJPEG stream with Raspberry Pi at
+                                        <br />
+                                        <span className="text-[#C6FF3D] font-mono font-bold">http://{streamIp}/video</span>
+                                    </div>
 
-                            {/* Center minimal placeholder */}
-                            <div className="flex flex-col items-center justify-center text-center max-w-sm">
-                                <div className="w-14 h-14 rounded-full border border-[#262626] bg-[#0d0d0d] flex items-center justify-center mb-3">
-                                    <Camera size={22} className="text-[#555]" />
+                                    <div className="flex items-center gap-2 w-full max-w-xs">
+                                        <input
+                                            type="text"
+                                            value={streamIp}
+                                            onChange={(e) => setStreamIp(e.target.value)}
+                                            placeholder="172.20.10.3:5000"
+                                            className="flex-1 bg-[#111] border border-[#333] px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-[#C6FF3D]"
+                                        />
+                                        <button
+                                            onClick={() => {
+                                                setStreamOnline(true);
+                                                const imgEl = document.getElementById("pi-stream-img") as HTMLImageElement;
+                                                if (imgEl) imgEl.src = `/rover-video?t=${Date.now()}`;
+                                            }}
+                                            className="px-3 py-1.5 bg-[#C6FF3D] text-black font-mono font-bold text-xs hover:bg-[#d4ff66] transition cursor-pointer"
+                                        >
+                                            RETRY
+                                        </button>
+                                    </div>
                                 </div>
-                                <div className="font-mono text-xs font-bold text-[#888] tracking-wider mb-1">
-                                    LIVE WEBCAM VIEWPORT
-                                </div>
-                                <div className="font-mono text-[11px] text-[#555] leading-relaxed">
-                                    Awaiting Raspberry Pi video stream endpoint
-                                    <br />
-                                    <span className="text-[#444] font-mono">http://&lt;pi-ip&gt;:5000/video</span>
+                            )}
+
+                            {/* Minimal corner brackets */}
+                            <div className="absolute top-4 left-4 w-5 h-5 border-t-2 border-l-2 border-[#C6FF3D]/60 pointer-events-none" />
+                            <div className="absolute top-4 right-4 w-5 h-5 border-t-2 border-r-2 border-[#C6FF3D]/60 pointer-events-none" />
+                            <div className="absolute bottom-4 left-4 w-5 h-5 border-b-2 border-l-2 border-[#C6FF3D]/60 pointer-events-none" />
+                            <div className="absolute bottom-4 right-4 w-5 h-5 border-b-2 border-r-2 border-[#C6FF3D]/60 pointer-events-none" />
+
+                            {/* Target Crosshair / Center reticle */}
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <div className="relative w-16 h-16">
+                                    <div className="absolute inset-x-0 top-1/2 h-[1px] bg-[#C6FF3D]/30" />
+                                    <div className="absolute inset-y-0 left-1/2 w-[1px] bg-[#C6FF3D]/30" />
+                                    <div className="w-full h-full rounded-full border border-[#C6FF3D]/25" />
                                 </div>
                             </div>
 
+                            {/* AI Target Detection Banner (Live from Pi vision pipeline) */}
+                            {aiDetections.length > 0 && (
+                                <div className="absolute top-6 left-6 z-10 flex items-center gap-2 px-3 py-1.5 bg-black/80 border border-[#C6FF3D] backdrop-blur font-mono text-xs">
+                                    <Crosshair size={13} className="text-[#C6FF3D] animate-spin" />
+                                    <span className="font-bold text-white tracking-wide">
+                                        TARGET: {aiDetections[0][0].toUpperCase()}
+                                    </span>
+                                    <span className="text-[#C6FF3D] font-bold">
+                                        {Math.round(aiDetections[0][1] * 100)}% CONF
+                                    </span>
+                                    {motionLevel > 0.3 && (
+                                        <span className="px-1.5 py-0.5 bg-[#ef4444]/20 border border-[#ef4444] text-[#ef4444] text-[10px] font-bold">
+                                            MOTION ACTIVE
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Threat Level Badge */}
+                            <div className="absolute top-6 right-6 z-10 font-mono text-xs">
+                                <span className={`px-2.5 py-1 border font-bold flex items-center gap-1.5 backdrop-blur ${
+                                    threatLevel === "WATCH" 
+                                        ? "border-[#f59e0b] bg-black/80 text-[#f59e0b]" 
+                                        : threatLevel === "ALERT" || threatLevel === "FIRE"
+                                        ? "border-[#ef4444] bg-black/80 text-[#ef4444] animate-pulse"
+                                        : "border-[#22c55e] bg-black/80 text-[#22c55e]"
+                                }`}>
+                                    <Shield size={12} />
+                                    FUSION: {threatLevel} ({Math.round(threatScore * 100)}%)
+                                </span>
+                            </div>
+
+                            {/* Spectrum Scanline Overlay if Night or Thermal */}
+                            {spectrumMode !== "STANDARD" && (
+                                <div
+                                    className="absolute inset-0 pointer-events-none opacity-20"
+                                    style={{
+                                        backgroundImage: "repeating-linear-gradient(0deg, #000, #000 2px, transparent 2px, transparent 4px)",
+                                    }}
+                                />
+                            )}
+
                             {/* Minimal bottom HUD coordinates stamp */}
-                            <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between font-mono text-[11px] text-[#555]">
-                                <span>OPTICAL FPS: --</span>
-                                <span>RES: 1920x1080</span>
+                            <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between font-mono text-[11px] text-[#aaa] z-10 bg-black/60 px-3 py-1 border border-white/10 backdrop-blur">
+                                <span className="flex items-center gap-2">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#C6FF3D]" />
+                                    FEED: 172.20.10.3:5000/video
+                                </span>
                                 <span>SPECTRUM: {spectrumMode}</span>
+                                <span>ZOOM: {zoomLevel}X</span>
+                                <span>FPS: {streamFps}</span>
                             </div>
                         </div>
                     </div>
@@ -244,6 +411,11 @@ export default function LiveCameraPage() {
                                 <span className="text-[#C6FF3D] font-bold">{roverData.distanceToWp}</span>
                             </div>
                         </div>
+
+                        <div className="text-[10px] text-[#777] mt-3 pt-2 border-t border-[#1a1a1a] flex items-center justify-between">
+                            <span className="truncate max-w-[220px]">STATUS: {gpsMessage}</span>
+                            <span className="text-[#C6FF3D] font-bold">{roverData.hdop} HDOP</span>
+                        </div>
                     </div>
 
                     {/* Panel 2: Surveillance Radar Sweep */}
@@ -307,7 +479,9 @@ export default function LiveCameraPage() {
                                     OPTICAL CONTROLS &amp; LINK
                                 </h3>
                             </div>
-                            <span className="text-[10px] text-[#3b82f6] font-bold">LORA -68 dBm</span>
+                            <span className="text-[10px] text-[#3b82f6] font-bold">
+                                {loraSignal !== null ? `LORA ${loraSignal} dBm` : "LORA STANDBY"}
+                            </span>
                         </div>
 
                         {/* Controls */}

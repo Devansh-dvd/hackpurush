@@ -37,7 +37,7 @@ export default function TacticalWorldMap({
     };
 
     // Helper to draw waypoints & perimeter around a center coordinate
-    const renderOverlays = (map: L.Map, lat: number, lon: number, heading: number) => {
+    const renderOverlays = (map: L.Map, lat: number, lon: number, _heading: number) => {
         if (waypointsLayerRef.current) {
             map.removeLayer(waypointsLayerRef.current);
         }
