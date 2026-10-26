@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { MapPin, ZoomIn, ZoomOut, Compass, Navigation, Crosshair, RefreshCw } from "lucide-react";
+import { MapPin, ZoomIn, ZoomOut, Compass, Navigation, Crosshair } from "lucide-react";
 
 interface TacticalWorldMapProps {
     roverLat: number;
@@ -24,33 +24,16 @@ export default function TacticalWorldMap({
 }: TacticalWorldMapProps) {
     const mapContainerRef = useRef<HTMLDivElement>(null);
     const mapInstanceRef = useRef<L.Map | null>(null);
-    const tileLayerRef = useRef<L.TileLayer | null>(null);
     const roverMarkerRef = useRef<L.Marker | null>(null);
     const waypointsLayerRef = useRef<L.LayerGroup | null>(null);
 
-    // Default to OpenStreetMap (streets) as requested
-    const [activeLayer, setActiveLayer] = useState<"streets" | "satellite" | "dark">("streets");
     const [cursorCoords, setCursorCoords] = useState<{ lat: number; lon: number } | null>(null);
 
-    const tileConfigs = {
-        streets: {
-            url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-            subdomains: "abc",
-            maxZoom: 19,
-        },
-        satellite: {
-            url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attribution: "Tiles &copy; Esri &mdash; High-Res Satellite",
-            subdomains: "abc",
-            maxZoom: 19,
-        },
-        dark: {
-            url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-            attribution: '&copy; CARTO &copy; OpenStreetMap',
-            subdomains: "abcd",
-            maxZoom: 20,
-        },
+    const osmConfig = {
+        url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        subdomains: "abc",
+        maxZoom: 19,
     };
 
     // Helper to draw waypoints & perimeter around a center coordinate
@@ -125,7 +108,7 @@ export default function TacticalWorldMap({
         waypointsLayerRef.current = layerGroup;
     };
 
-    // Initialize Map
+    // Initialize Map with OpenStreetMap
     useEffect(() => {
         if (!mapContainerRef.current) return;
 
@@ -136,15 +119,13 @@ export default function TacticalWorldMap({
             attributionControl: false,
         });
 
-        // Add default tile layer (OpenStreetMap)
-        const config = tileConfigs[activeLayer];
-        const tileLayer = L.tileLayer(config.url, {
-            attribution: config.attribution,
-            subdomains: config.subdomains,
-            maxZoom: config.maxZoom,
+        // Add OpenStreetMap tile layer directly
+        L.tileLayer(osmConfig.url, {
+            attribution: osmConfig.attribution,
+            subdomains: osmConfig.subdomains,
+            maxZoom: osmConfig.maxZoom,
         }).addTo(map);
 
-        tileLayerRef.current = tileLayer;
         mapInstanceRef.current = map;
 
         // Custom Rover DivIcon
@@ -208,25 +189,6 @@ export default function TacticalWorldMap({
         renderOverlays(mapInstanceRef.current, roverLat, roverLon, roverHeading);
     }, [roverLat, roverLon, roverHeading]);
 
-    // Layer switcher
-    const switchLayer = (layer: "streets" | "satellite" | "dark") => {
-        if (!mapInstanceRef.current) return;
-        setActiveLayer(layer);
-
-        if (tileLayerRef.current) {
-            mapInstanceRef.current.removeLayer(tileLayerRef.current);
-        }
-
-        const config = tileConfigs[layer];
-        const newLayer = L.tileLayer(config.url, {
-            attribution: config.attribution,
-            subdomains: config.subdomains,
-            maxZoom: config.maxZoom,
-        }).addTo(mapInstanceRef.current);
-
-        tileLayerRef.current = newLayer;
-    };
-
     const zoomIn = () => mapInstanceRef.current?.zoomIn();
     const zoomOut = () => mapInstanceRef.current?.zoomOut();
     const recenterRover = () => {
@@ -252,7 +214,7 @@ export default function TacticalWorldMap({
                         <button
                             onClick={onDetectLocation}
                             disabled={gpsLoading}
-                            className="px-2.5 py-0.5 border border-[#C6FF3D] bg-[#C6FF3D]/10 hover:bg-[#C6FF3D] hover:text-black transition text-[11px] font-bold text-[#C6FF3D] flex items-center gap-1.5 cursor-pointer"
+                            className="px-2.5 py-1 border border-[#C6FF3D] bg-[#C6FF3D]/10 hover:bg-[#C6FF3D] hover:text-black transition text-[11px] font-bold text-[#C6FF3D] flex items-center gap-1.5 cursor-pointer"
                             title="Detect Live Browser / Device GPS Location"
                         >
                             <Navigation size={12} className={gpsLoading ? "animate-spin" : ""} />
@@ -260,23 +222,10 @@ export default function TacticalWorldMap({
                         </button>
                     )}
 
-                    {/* Layer selector */}
-                    <div className="flex items-center gap-1">
-                        {(["streets", "satellite", "dark"] as const).map((l) => (
-                            <button
-                                key={l}
-                                onClick={() => switchLayer(l)}
-                                className="px-2 py-0.5 border text-[11px] font-bold uppercase transition cursor-pointer"
-                                style={{
-                                    borderColor: activeLayer === l ? "#C6FF3D" : "#333",
-                                    background: activeLayer === l ? "rgba(198,255,61,0.18)" : "#141414",
-                                    color: activeLayer === l ? "#C6FF3D" : "#888",
-                                }}
-                            >
-                                {l === "streets" ? "OPENSTREETMAP" : l === "satellite" ? "SATELLITE" : "TACTICAL"}
-                            </button>
-                        ))}
-                    </div>
+                    {/* OpenStreetMap Dedicated Badge */}
+                    <span className="px-2.5 py-1 border border-[#C6FF3D] bg-[#C6FF3D]/15 text-[11px] font-bold text-[#C6FF3D]">
+                        OPENSTREETMAP
+                    </span>
                 </div>
             </div>
 
